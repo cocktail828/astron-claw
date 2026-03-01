@@ -50,6 +50,22 @@ class TokenManager:
         self._conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
         self._conn.commit()
 
+    def list_all(self) -> list[dict]:
+        """Return all non-expired tokens with created_at and expires_at."""
+        cutoff = time.time() - self._expiry_seconds
+        rows = self._conn.execute(
+            "SELECT token, created_at FROM tokens WHERE created_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        return [
+            {
+                "token": row[0],
+                "created_at": row[1],
+                "expires_at": row[1] + self._expiry_seconds,
+            }
+            for row in rows
+        ]
+
     def cleanup_expired(self) -> int:
         """Remove all expired tokens. Returns count of deleted rows."""
         cutoff = time.time() - self._expiry_seconds

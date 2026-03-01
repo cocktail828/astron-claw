@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Astron Claw - Admin</title>
+<style>
+/* ===== CSS Reset & Variables (same as index.html) ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0a0e27;
+  --bg-secondary: #111638;
+  --bg-tertiary: #1a2040;
+  --bg-input: #151a3a;
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0b8;
+  --text-muted: #6b7194;
+  --accent: #4f8ff7;
+  --accent-hover: #6ba1ff;
+  --accent-dim: rgba(79, 143, 247, 0.15);
+  --border: #252b52;
+  --error: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --transition: 0.2s ease;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f7f8fc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f2f8;
+  --bg-input: #ffffff;
+  --text-primary: #1a1a2e;
+  --text-secondary: #555770;
+  --text-muted: #8e90a6;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-dim: rgba(37, 99, 235, 0.1);
+  --border: #e2e4ee;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background var(--transition), color var(--transition);
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ===== Layout ===== */
+.page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
+
+/* ===== Header ===== */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.header .logo-sm {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent), #7c3aed);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.header .logo-sm::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translate(2px, -2px);
+  top: 8px;
+  left: 9px;
+}
+
+.header .logo-sm::after {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  background: #fff;
+  border-radius: 50%;
+  top: 9px;
+  right: 9px;
+  box-shadow: -3px -2px 0 0 #fff;
+}
+
+.header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  flex: 1;
+}
+
+.header h1 small {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-left: 8px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.icon-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+/* ===== Stats Cards ===== */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.stat-card .label {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.stat-card .value {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.stat-card .value.accent { color: var(--accent); }
+.stat-card .value.success { color: var(--success); }
+.stat-card .value.warning { color: var(--warning); }
+
+/* ===== Toolbar ===== */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.toolbar .spacer { flex: 1; }
+
+.auto-refresh {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ===== Table ===== */
+.table-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+thead th {
+  text-align: left;
+  padding: 12px 16px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover {
+  background: var(--accent-dim);
+}
+
+.token-cell {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.token-cell .masked {
+  color: var(--text-secondary);
+}
+
+.copy-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font);
+  transition: all var(--transition);
+}
+
+.copy-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-online {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+
+.badge-offline {
+  background: rgba(107, 113, 148, 0.12);
+  color: var(--text-muted);
+}
+
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.time-cell {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+/* ===== Modal ===== */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-overlay.active {
+  display: flex;
+}
+
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 90%;
+  max-width: 480px;
+  box-shadow: var(--shadow);
+  animation: fadeUp 0.25s ease;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.modal h2 {
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+
+.modal p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.token-display {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  word-break: break-all;
+  margin-bottom: 16px;
+  user-select: all;
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(80px);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 20px;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+  z-index: 200;
+  opacity: 0;
+  transition: all 0.3s ease;
+  pointer-events: none;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ===== Mobile ===== */
+@media (max-width: 640px) {
+  .stats { grid-template-columns: 1fr; }
+  .toolbar { flex-wrap: wrap; }
+  table { font-size: 12px; }
+  thead th, tbody td { padding: 10px 12px; }
+}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <!-- Header -->
+  <div class="header">
+    <div class="logo-sm"></div>
+    <h1>Astron Claw <small>Admin</small></h1>
+    <div class="header-actions">
+      <a class="icon-btn" href="/" title="Chat">&#8962;</a>
+      <button class="icon-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
+        <span id="theme-icon">&#9790;</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="label">Total Tokens</div>
+      <div class="value accent" id="stat-total">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Online Bots</div>
+      <div class="value success" id="stat-bots">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Active Chats</div>
+      <div class="value warning" id="stat-chats">-</div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="generateToken()">+ New Token</button>
+    <button class="btn btn-secondary" onclick="cleanupExpired()">Cleanup Expired</button>
+    <div class="spacer"></div>
+    <span class="auto-refresh" id="refresh-label">Auto-refresh: 5s</span>
+  </div>
+
+  <!-- Table -->
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th>Token</th>
+          <th>Created</th>
+          <th>Expires</th>
+          <th>Bot</th>
+          <th>Chats</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="tokens-body">
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- New Token Modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Token Generated</h2>
+    <p>Copy this token now. You won't be able to see the full value again.</p>
+    <div class="token-display" id="modal-token"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="hideModal()">Close</button>
+      <button class="btn btn-primary" onclick="copyModalToken()">Copy Token</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ===== State =====
+let refreshTimer = null;
+const REFRESH_INTERVAL = 5000;
+
+// ===== Theme =====
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  document.getElementById('theme-icon').innerHTML = next === 'dark' ? '&#9790;' : '&#9788;';
+  localStorage.setItem('astron-theme', next);
+}
+
+(function() {
+  const saved = localStorage.getItem('astron-theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-theme', saved);
+    document.getElementById('theme-icon').innerHTML = saved === 'dark' ? '&#9790;' : '&#9788;';
+  }
+})();
+
+// ===== API =====
+async function fetchTokens() {
+  try {
+    const res = await fetch('/api/admin/tokens');
+    const data = await res.json();
+    renderTokens(data.tokens || []);
+  } catch (e) {
+    console.error('Failed to fetch tokens:', e);
+  }
+}
+
+async function generateToken() {
+  try {
+    const res = await fetch('/api/admin/tokens', { method: 'POST' });
+    const data = await res.json();
+    showModal(data.token);
+    fetchTokens();
+  } catch (e) {
+    showToast('Failed to generate token');
+  }
+}
+
+async function deleteToken(token) {
+  if (!confirm('Delete this token? Connected clients will be disconnected.')) return;
+  try {
+    await fetch('/api/admin/tokens/' + encodeURIComponent(token), { method: 'DELETE' });
+    showToast('Token deleted');
+    fetchTokens();
+  } catch (e) {
+    showToast('Failed to delete token');
+  }
+}
+
+async function cleanupExpired() {
+  try {
+    const res = await fetch('/api/admin/cleanup', { method: 'POST' });
+    const data = await res.json();
+    showToast('Removed ' + data.removed + ' expired token(s)');
+    fetchTokens();
+  } catch (e) {
+    showToast('Cleanup failed');
+  }
+}
+
+// ===== Render =====
+function renderTokens(tokens) {
+  const tbody = document.getElementById('tokens-body');
+  const statTotal = document.getElementById('stat-total');
+  const statBots = document.getElementById('stat-bots');
+  const statChats = document.getElementById('stat-chats');
+
+  statTotal.textContent = tokens.length;
+  statBots.textContent = tokens.filter(t => t.bot_online).length;
+  statChats.textContent = tokens.reduce((s, t) => s + t.chat_count, 0);
+
+  if (tokens.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No tokens yet. Click "+ New Token" to create one.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = tokens.map(t => {
+    const masked = t.token.slice(0, 7) + '...' + t.token.slice(-4);
+    const created = formatTime(t.created_at);
+    const expires = formatTime(t.expires_at);
+    const botBadge = t.bot_online
+      ? '<span class="badge badge-online"><span class="badge-dot"></span>Online</span>'
+      : '<span class="badge badge-offline"><span class="badge-dot"></span>Offline</span>';
+
+    return `<tr>
+      <td><div class="token-cell"><span class="masked">${esc(masked)}</span><button class="copy-btn" onclick="copyToken('${esc(t.token)}')">Copy</button></div></td>
+      <td class="time-cell">${esc(created)}</td>
+      <td class="time-cell">${esc(expires)}</td>
+      <td>${botBadge}</td>
+      <td>${t.chat_count}</td>
+      <td><button class="btn btn-danger" onclick="deleteToken('${esc(t.token)}')">Delete</button></td>
+    </tr>`;
+  }).join('');
+}
+
+// ===== Helpers =====
+function formatTime(ts) {
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function copyToken(token) {
+  navigator.clipboard.writeText(token).then(() => showToast('Token copied'));
+}
+
+// ===== Modal =====
+function showModal(token) {
+  document.getElementById('modal-token').textContent = token;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+function hideModal() {
+  document.getElementById('modal-overlay').classList.remove('active');
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal-overlay')) hideModal();
+}
+
+function copyModalToken() {
+  const token = document.getElementById('modal-token').textContent;
+  navigator.clipboard.writeText(token).then(() => showToast('Token copied'));
+}
+
+// ===== Toast =====
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ===== Init =====
+fetchTokens();
+refreshTimer = setInterval(fetchTokens, REFRESH_INTERVAL);
+</script>
+</body>
+</html>

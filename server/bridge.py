@@ -121,6 +121,17 @@ class ConnectionBridge:
             }
             await self._broadcast_to_chats(token, error_event)
 
+    def get_connections_summary(self) -> dict[str, dict]:
+        """Return per-token bot online status and chat connection count."""
+        tokens: set[str] = set(self._bots.keys()) | set(self._chats.keys())
+        summary: dict[str, dict] = {}
+        for t in tokens:
+            summary[t] = {
+                "bot_online": t in self._bots,
+                "chat_count": len(self._chats.get(t, set())),
+            }
+        return summary
+
     async def notify_bot_connected(self, token: str) -> None:
         event = {"type": "bot_status", "connected": True}
         await self._broadcast_to_chats(token, event)

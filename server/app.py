@@ -45,6 +45,49 @@ async def serve_index():
     return HTMLResponse(content="<h1>Astron Claw</h1><p>Frontend not found.</p>")
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def serve_admin():
+    admin_file = frontend_dir / "admin.html"
+    if admin_file.is_file():
+        return HTMLResponse(content=admin_file.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Admin</h1><p>Admin page not found.</p>")
+
+
+@app.get("/api/admin/tokens")
+async def list_tokens():
+    tokens = token_manager.list_all()
+    connections = bridge.get_connections_summary()
+    result = []
+    for t in tokens:
+        conn = connections.get(t["token"], {})
+        result.append({
+            "token": t["token"],
+            "created_at": t["created_at"],
+            "expires_at": t["expires_at"],
+            "bot_online": conn.get("bot_online", False),
+            "chat_count": conn.get("chat_count", 0),
+        })
+    return {"tokens": result}
+
+
+@app.post("/api/admin/tokens")
+async def admin_create_token():
+    token = token_manager.generate()
+    return {"token": token}
+
+
+@app.delete("/api/admin/tokens/{token_value}")
+async def admin_delete_token(token_value: str):
+    token_manager.remove(token_value)
+    return {"ok": True}
+
+
+@app.post("/api/admin/cleanup")
+async def admin_cleanup():
+    count = token_manager.cleanup_expired()
+    return {"removed": count}
+
+
 # ── Bot WebSocket ─────────────────────────────────────────────────────────────
 
 
