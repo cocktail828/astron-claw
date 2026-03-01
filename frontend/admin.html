@@ -59,11 +59,138 @@ html, body {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
+/* ===== Auth Screen ===== */
+.auth-screen {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.auth-screen.active {
+  display: flex;
+}
+
+.auth-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: var(--shadow);
+  animation: fadeUp 0.5s ease;
+}
+
+.auth-brand {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.auth-brand .logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  margin-bottom: 16px;
+  object-fit: cover;
+}
+
+.auth-brand h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.auth-brand p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.form-group input:focus {
+  border-color: var(--accent);
+}
+
+.form-group input::placeholder {
+  color: var(--text-muted);
+}
+
+.auth-btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--accent);
+  color: #fff;
+}
+
+.auth-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.auth-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.auth-error {
+  color: var(--error);
+  font-size: 13px;
+  margin-bottom: 12px;
+  display: none;
+}
+
+.auth-error.show {
+  display: block;
+}
+
 /* ===== Layout ===== */
 .page {
+  display: none;
   max-width: 1000px;
   margin: 0 auto;
   padding: 24px 20px;
+}
+
+.page.active {
+  display: block;
 }
 
 /* ===== Header ===== */
@@ -120,6 +247,20 @@ html, body {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+.logout-btn {
+  width: auto;
+  padding: 0 12px;
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.logout-btn:hover {
+  color: var(--error);
+  border-color: var(--error);
 }
 
 /* ===== Stats Cards ===== */
@@ -411,12 +552,56 @@ tbody tr:hover {
   .toolbar { flex-wrap: wrap; }
   table { font-size: 12px; }
   thead th, tbody td { padding: 10px 12px; }
+  .auth-card { padding: 28px 20px; }
 }
 </style>
 </head>
 <body>
 
-<div class="page">
+<!-- ===== Setup Screen ===== -->
+<div class="auth-screen" id="screen-setup">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <img src="/static/astron_logo.png" class="logo" alt="Astron Claw">
+      <h1>Astron Claw</h1>
+      <p>Set up your admin password</p>
+    </div>
+    <form id="setup-form" onsubmit="handleSetup(event)">
+      <div class="form-group">
+        <label for="setup-pw">Password</label>
+        <input type="password" id="setup-pw" placeholder="Enter password" required minlength="4">
+      </div>
+      <div class="form-group">
+        <label for="setup-pw2">Confirm Password</label>
+        <input type="password" id="setup-pw2" placeholder="Confirm password" required minlength="4">
+      </div>
+      <div class="auth-error" id="setup-error"></div>
+      <button type="submit" class="auth-btn" id="setup-btn">Set Password</button>
+    </form>
+  </div>
+</div>
+
+<!-- ===== Login Screen ===== -->
+<div class="auth-screen" id="screen-login">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <img src="/static/astron_logo.png" class="logo" alt="Astron Claw">
+      <h1>Astron Claw</h1>
+      <p>Admin login</p>
+    </div>
+    <form id="login-form" onsubmit="handleLogin(event)">
+      <div class="form-group">
+        <label for="login-pw">Password</label>
+        <input type="password" id="login-pw" placeholder="Enter admin password" required>
+      </div>
+      <div class="auth-error" id="login-error"></div>
+      <button type="submit" class="auth-btn" id="login-btn">Log In</button>
+    </form>
+  </div>
+</div>
+
+<!-- ===== Main Screen ===== -->
+<div class="page" id="screen-main">
   <!-- Header -->
   <div class="header">
     <img src="/static/astron_logo.png" class="logo-sm" alt="Logo">
@@ -426,6 +611,7 @@ tbody tr:hover {
       <button class="icon-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
         <span id="theme-icon">&#9790;</span>
       </button>
+      <button class="icon-btn logout-btn" onclick="handleLogout()" title="Logout">Logout</button>
     </div>
   </div>
 
@@ -511,47 +697,160 @@ function toggleTheme() {
   }
 })();
 
-// ===== API =====
+// ===== Screen switching =====
+function showScreen(name) {
+  document.getElementById('screen-setup').classList.remove('active');
+  document.getElementById('screen-login').classList.remove('active');
+  document.getElementById('screen-main').classList.remove('active');
+  document.getElementById('screen-' + name).classList.add('active');
+
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (name === 'main') {
+    fetchTokens();
+    refreshTimer = setInterval(fetchTokens, REFRESH_INTERVAL);
+  }
+}
+
+// ===== Auth =====
+async function checkAuthStatus() {
+  try {
+    const res = await fetch('/api/admin/auth/status');
+    const data = await res.json();
+    if (data.need_setup) {
+      showScreen('setup');
+    } else if (data.authenticated) {
+      showScreen('main');
+    } else {
+      showScreen('login');
+    }
+  } catch (e) {
+    console.error('Failed to check auth status:', e);
+    showScreen('login');
+  }
+}
+
+async function handleSetup(e) {
+  e.preventDefault();
+  const pw = document.getElementById('setup-pw').value;
+  const pw2 = document.getElementById('setup-pw2').value;
+  const errEl = document.getElementById('setup-error');
+  const btn = document.getElementById('setup-btn');
+
+  errEl.classList.remove('show');
+  if (pw !== pw2) {
+    errEl.textContent = 'Passwords do not match';
+    errEl.classList.add('show');
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/admin/auth/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || 'Setup failed';
+      errEl.classList.add('show');
+      return;
+    }
+    showScreen('main');
+  } catch (err) {
+    errEl.textContent = 'Network error';
+    errEl.classList.add('show');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const pw = document.getElementById('login-pw').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+
+  errEl.classList.remove('show');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/admin/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || 'Login failed';
+      errEl.classList.add('show');
+      return;
+    }
+    showScreen('main');
+  } catch (err) {
+    errEl.textContent = 'Network error';
+    errEl.classList.add('show');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function handleLogout() {
+  try {
+    await fetch('/api/admin/auth/logout', { method: 'POST' });
+  } catch (e) { /* ignore */ }
+  showScreen('login');
+}
+
+// ===== API (with 401 handling) =====
+async function apiFetch(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    showScreen('login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
 async function fetchTokens() {
   try {
-    const res = await fetch('/api/admin/tokens');
+    const res = await apiFetch('/api/admin/tokens');
     const data = await res.json();
     renderTokens(data.tokens || []);
   } catch (e) {
-    console.error('Failed to fetch tokens:', e);
+    if (e.message !== 'Unauthorized') console.error('Failed to fetch tokens:', e);
   }
 }
 
 async function generateToken() {
   try {
-    const res = await fetch('/api/admin/tokens', { method: 'POST' });
+    const res = await apiFetch('/api/admin/tokens', { method: 'POST' });
     const data = await res.json();
     showModal(data.token);
     fetchTokens();
   } catch (e) {
-    showToast('Failed to generate token');
+    if (e.message !== 'Unauthorized') showToast('Failed to generate token');
   }
 }
 
 async function deleteToken(token) {
   if (!confirm('Delete this token? Connected clients will be disconnected.')) return;
   try {
-    await fetch('/api/admin/tokens/' + encodeURIComponent(token), { method: 'DELETE' });
+    await apiFetch('/api/admin/tokens/' + encodeURIComponent(token), { method: 'DELETE' });
     showToast('Token deleted');
     fetchTokens();
   } catch (e) {
-    showToast('Failed to delete token');
+    if (e.message !== 'Unauthorized') showToast('Failed to delete token');
   }
 }
 
 async function cleanupExpired() {
   try {
-    const res = await fetch('/api/admin/cleanup', { method: 'POST' });
+    const res = await apiFetch('/api/admin/cleanup', { method: 'POST' });
     const data = await res.json();
     showToast('Removed ' + data.removed + ' expired token(s)');
     fetchTokens();
   } catch (e) {
-    showToast('Cleanup failed');
+    if (e.message !== 'Unauthorized') showToast('Cleanup failed');
   }
 }
 
@@ -603,8 +902,24 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function clipCopy(text) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => showToast('Token copied'));
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('Token copied');
+  }
+}
+
 function copyToken(token) {
-  navigator.clipboard.writeText(token).then(() => showToast('Token copied'));
+  clipCopy(token);
 }
 
 // ===== Modal =====
@@ -623,7 +938,7 @@ function closeModal(e) {
 
 function copyModalToken() {
   const token = document.getElementById('modal-token').textContent;
-  navigator.clipboard.writeText(token).then(() => showToast('Token copied'));
+  clipCopy(token);
 }
 
 // ===== Toast =====
@@ -635,8 +950,7 @@ function showToast(msg) {
 }
 
 // ===== Init =====
-fetchTokens();
-refreshTimer = setInterval(fetchTokens, REFRESH_INTERVAL);
+checkAuthStatus();
 </script>
 </body>
 </html>

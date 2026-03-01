@@ -927,18 +927,22 @@ function connectWebSocket() {
 
   ws.onopen = function() {
     reconnectAttempts = 0;
-    showLoginStatus('Connected!', 'success');
-    setTimeout(() => {
-      document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('chat-screen').classList.remove('hidden');
-      updateConnectionStatus(true);
-      document.getElementById('msg-input').focus();
-    }, 400);
+    showLoginStatus('Validating token...', 'connecting');
   };
 
   ws.onmessage = function(event) {
     try {
       const msg = JSON.parse(event.data);
+      // First message from server means token is valid — enter chat
+      if (!document.getElementById('login-screen').classList.contains('hidden')) {
+        showLoginStatus('Connected!', 'success');
+        setTimeout(() => {
+          document.getElementById('login-screen').classList.add('hidden');
+          document.getElementById('chat-screen').classList.remove('hidden');
+          updateConnectionStatus(true);
+          document.getElementById('msg-input').focus();
+        }, 300);
+      }
       handleServerMessage(msg);
     } catch (e) {
       console.error('Failed to parse message:', e);
