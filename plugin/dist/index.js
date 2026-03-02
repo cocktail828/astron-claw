@@ -8,7 +8,7 @@ import WebSocket from "ws";
 // Constants
 // ---------------------------------------------------------------------------
 const PLUGIN_ID = "astron-claw";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "1.0.0";
 
 const DEFAULT_BRIDGE_URL = "ws://localhost:8765/bridge/bot";
 const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";

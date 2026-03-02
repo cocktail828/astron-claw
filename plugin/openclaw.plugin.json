@@ -2,7 +2,7 @@
   "id": "astron-claw",
   "name": "astron-claw",
   "description": "Connector plugin that bridges the Astron server with the local OpenClaw Gateway.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
