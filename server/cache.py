@@ -1,10 +1,7 @@
-import logging
-
 from redis.asyncio import Redis, RedisCluster
 
 from config import RedisConfig
-
-logger = logging.getLogger(__name__)
+from log import logger
 
 _redis: Redis | RedisCluster | None = None
 
@@ -31,7 +28,7 @@ async def init_redis(config: RedisConfig) -> Redis | RedisCluster:
 
     await _redis.ping()
     mode = "cluster" if config.cluster else "standalone"
-    logger.info("Redis connected (%s): %s:%s", mode, config.host, config.port)
+    logger.info("Redis connected ({}): {}:{}", mode, config.host, config.port)
     return _redis
 
 

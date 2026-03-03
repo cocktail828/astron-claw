@@ -1,4 +1,3 @@
-import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -6,6 +5,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Cookie, Head
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
+from log import logger
 from config import load_config
 from database import init_db, get_session_factory, close_db
 from cache import init_redis, close_redis
@@ -13,9 +13,6 @@ from token_manager import TokenManager
 from bridge import ConnectionBridge
 from admin_auth import AdminAuth
 from media_manager import MediaManager, MAX_FILE_SIZE
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # These will be initialized during lifespan startup
 token_manager: TokenManager
@@ -74,18 +71,20 @@ async def health_check():
             async with _engine.connect() as conn:
                 await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
             mysql_ok = True
-    except Exception:
-        logger.warning("MySQL health check failed")
+    except Exception as e:
+        logger.warning("MySQL health check failed: {}", str(e))
 
     try:
         from cache import get_redis
         r = get_redis()
         await r.ping()
         redis_ok = True
-    except Exception:
-        logger.warning("Redis health check failed")
+    except Exception as e:
+        logger.warning("Redis health check failed: {}", str(e))
 
     status = "ok" if (mysql_ok and redis_ok) else "degraded"
+    if status == "degraded":
+        logger.warning("Health check degraded — MySQL={}, Redis={}", mysql_ok, redis_ok)
     return {"status": status, "mysql": mysql_ok, "redis": redis_ok}
 
 
@@ -144,6 +143,7 @@ async def admin_auth_setup(body: dict):
         return JSONResponse({"error": "Password too short"}, status_code=400)
     await admin_auth.set_password(password)
     session = await admin_auth.create_session()
+    logger.info("Admin password set up for the first time")
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
         key="admin_session", value=session,
@@ -156,8 +156,10 @@ async def admin_auth_setup(body: dict):
 async def admin_auth_login(body: dict):
     password = body.get("password", "")
     if not await admin_auth.verify_password(password):
+        logger.warning("Admin login failed — wrong password")
         return JSONResponse({"error": "Wrong password"}, status_code=401)
     session = await admin_auth.create_session()
+    logger.info("Admin logged in successfully")
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
         key="admin_session", value=session,
@@ -169,6 +171,7 @@ async def admin_auth_login(body: dict):
 @app.post("/api/admin/auth/logout")
 async def admin_auth_logout(admin_session: str | None = Cookie(default=None)):
     await admin_auth.remove_session(admin_session)
+    logger.info("Admin logged out")
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(key="admin_session", path="/")
     return resp
@@ -212,6 +215,7 @@ async def admin_create_token(body: dict = {}, admin_session: str | None = Cookie
     name = body.get("name", "")
     expires_in = body.get("expires_in", 86400)
     token = await token_manager.generate(name=name, expires_in=expires_in)
+    logger.info("Admin created token: {}... (name={})", token[:16], name)
     return {"token": token}
 
 
@@ -221,6 +225,7 @@ async def admin_delete_token(token_value: str, admin_session: str | None = Cooki
     if denied:
         return denied
     await token_manager.remove(token_value)
+    logger.info("Admin deleted token: {}...", token_value[:16])
     return {"ok": True}
 
 
@@ -233,6 +238,7 @@ async def admin_update_token(token_value: str, body: dict, admin_session: str | 
     expires_in = body.get("expires_in")
     if not await token_manager.update(token_value, name=name, expires_in=expires_in):
         return JSONResponse({"error": "Token not found"}, status_code=404)
+    logger.info("Admin updated token: {}...", token_value[:16])
     return {"ok": True}
 
 
@@ -243,6 +249,7 @@ async def admin_cleanup(admin_session: str | None = Cookie(default=None)):
         return denied
     token_count = await token_manager.cleanup_expired()
     media_count = await media_manager.cleanup_expired()
+    logger.info("Admin cleanup: removed {} tokens, {} media files", token_count, media_count)
     return {"removed_tokens": token_count, "removed_media": media_count}
 
 
@@ -275,6 +282,7 @@ async def upload_media(
     file_data = await file.read()
 
     if len(file_data) > MAX_FILE_SIZE:
+        logger.warning("Media upload rejected: file too large ({} bytes)", len(file_data))
         return JSONResponse(
             {"error": f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB"},
             status_code=413,
@@ -285,6 +293,7 @@ async def upload_media(
 
     result = await media_manager.store(file_data, file_name, mime_type, token)
     if not result:
+        logger.warning("Media upload rejected: invalid file (name={}, mime={})", file_name, mime_type)
         return JSONResponse({"error": "Invalid file or unsupported type"}, status_code=400)
 
     result["downloadUrl"] = f"/api/media/download/{result['mediaId']}"
@@ -309,6 +318,7 @@ async def download_media(
 
     file_path = await media_manager.get_file_path(media_id)
     if not file_path:
+        logger.error("Media file missing on disk: {}", media_id)
         return JSONResponse({"error": "Media file missing"}, status_code=404)
 
     return FileResponse(
@@ -330,6 +340,7 @@ async def ws_bot(
     if not await token_manager.validate(bot_token):
         await ws.accept()
         await ws.close(code=4001, reason="Invalid or missing bot token")
+        logger.warning("Bot connection rejected: invalid token {}...", bot_token[:10])
         return
 
     await ws.accept()
@@ -337,18 +348,19 @@ async def ws_bot(
     if not bridge.register_bot(bot_token, ws):
         await ws.send_json({"error": "Another bot is already connected with this token"})
         await ws.close(code=4002, reason="Bot already connected")
+        logger.warning("Bot connection rejected: duplicate token {}...", bot_token[:10])
         return
 
-    logger.info("Bot connected: %s...", bot_token[:10])
+    logger.info("Bot connected: {}...", bot_token[:10])
     await bridge.notify_bot_connected(bot_token)
     try:
         while True:
             raw = await ws.receive_text()
             await bridge.handle_bot_message(bot_token, raw)
     except WebSocketDisconnect:
-        logger.info("Bot disconnected: %s...", bot_token[:10])
+        logger.info("Bot disconnected: {}...", bot_token[:10])
     except Exception:
-        logger.exception("Bot connection error: %s...", bot_token[:10])
+        logger.exception("Bot connection error: {}...", bot_token[:10])
     finally:
         await bridge.unregister_bot(bot_token)
         await bridge.notify_bot_disconnected(bot_token)
@@ -365,11 +377,12 @@ async def ws_chat(
     if not await token_manager.validate(token):
         await ws.accept()
         await ws.close(code=4001, reason="Invalid or missing token")
+        logger.warning("Chat connection rejected: invalid token {}...", token[:10])
         return
 
     await ws.accept()
     bridge.register_chat(token, ws)
-    logger.info("Chat client connected: %s...", token[:10])
+    logger.info("Chat client connected: {}...", token[:10])
 
     await ws.send_json({
         "type": "bot_status",
@@ -446,9 +459,9 @@ async def ws_chat(
                     await ws.send_json({"type": "error", "content": "Failed to send to bot"})
 
     except WebSocketDisconnect:
-        logger.info("Chat client disconnected: %s...", token[:10])
+        logger.info("Chat client disconnected: {}...", token[:10])
     except Exception:
-        logger.exception("Chat connection error: %s...", token[:10])
+        logger.exception("Chat connection error: {}...", token[:10])
     finally:
         bridge.unregister_chat(token, ws)
 

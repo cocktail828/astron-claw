@@ -7,3 +7,4 @@ aiomysql
 redis[hiredis]
 python-dotenv
 alembic
+loguru

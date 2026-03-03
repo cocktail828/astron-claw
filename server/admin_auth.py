@@ -1,14 +1,12 @@
 import hashlib
 import secrets
-import logging
 
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from models import AdminConfig
-
-logger = logging.getLogger(__name__)
+from log import logger
 
 SESSION_TTL = 86400  # 24 hours
 _SESSION_PREFIX = "admin:session:"
@@ -58,6 +56,7 @@ class AdminAuth:
                 session.add(AdminConfig(key="password_hash", value=pw_hash))
 
             await session.commit()
+        logger.info("Admin password updated")
 
     async def verify_password(self, password: str) -> bool:
         async with self._session() as session:
@@ -71,6 +70,7 @@ class AdminAuth:
             stored_hash = hash_row.scalar_one_or_none()
 
         if not salt or not stored_hash:
+            logger.warning("Admin password verification failed: no password configured")
             return False
         expected = hashlib.sha256((salt + password).encode()).hexdigest()
         return secrets.compare_digest(expected, stored_hash)

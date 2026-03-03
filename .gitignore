@@ -2,6 +2,7 @@ node_modules/
 __pycache__/
 *.pyc
 *.log
+server/logs/
 *.db
 .DS_Store
 .env

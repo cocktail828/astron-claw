@@ -1,12 +1,11 @@
 import json
 import uuid
-import logging
 from typing import Optional
 
 from fastapi import WebSocket
 from redis.asyncio import Redis
 
-logger = logging.getLogger(__name__)
+from log import logger
 
 _SESSIONS_PREFIX = "bridge:sessions:"
 _ACTIVE_PREFIX = "bridge:active:"
@@ -47,6 +46,7 @@ class ConnectionBridge:
         self._bots.pop(token, None)
         await self._redis.delete(f"{_SESSIONS_PREFIX}{token}")
         await self._redis.delete(f"{_ACTIVE_PREFIX}{token}")
+        logger.info("Bot unregistered, Redis sessions cleaned: {}...", token[:10])
 
     def register_chat(self, token: str, ws: WebSocket) -> None:
         if token not in self._chats:
@@ -69,6 +69,7 @@ class ConnectionBridge:
         await self._redis.rpush(key, session_id)
         await self._redis.set(f"{_ACTIVE_PREFIX}{token}", session_id)
         session_number = await self._redis.llen(key)
+        logger.info("Session created: {} (token={}...)", session_id[:8], token[:10])
         return session_id, session_number
 
     async def reset_session(self, token: str) -> tuple[str, int]:
@@ -79,6 +80,7 @@ class ConnectionBridge:
         """Switch the active session. Returns False if session_id not found."""
         sessions = await self._redis.lrange(f"{_SESSIONS_PREFIX}{token}", 0, -1)
         if session_id not in sessions:
+            logger.warning("Session switch failed: {} not found (token={}...)", session_id[:8], token[:10])
             return False
         await self._redis.set(f"{_ACTIVE_PREFIX}{token}", session_id)
         return True
@@ -148,9 +150,10 @@ class ConnectionBridge:
 
         try:
             await bot_ws.send_json(rpc_request)
+            logger.info("Sent to bot: req={} type={} (token={}...)", request_id, msg_type, token[:10])
             return request_id
         except Exception:
-            logger.exception("Failed to send to bot for token %s", token[:10])
+            logger.exception("Failed to send to bot (token={}...)", token[:10])
             self._pending_requests.pop(request_id, None)
             return None
 
@@ -159,7 +162,7 @@ class ConnectionBridge:
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("Invalid JSON from bot for token %s", token[:10])
+            logger.warning("Invalid JSON from bot (token={}...)", token[:10])
             return
 
         # Handle ping from plugin
@@ -185,9 +188,11 @@ class ConnectionBridge:
         # If it's a JSON-RPC error response
         if "id" in msg and "error" in msg:
             self._pending_requests.pop(msg["id"], None)
+            error_msg = msg["error"].get("message", "Unknown error from bot")
+            logger.error("Bot JSON-RPC error: {} (token={}...)", error_msg, token[:10])
             error_event = {
                 "type": "error",
-                "content": msg["error"].get("message", "Unknown error from bot"),
+                "content": error_msg,
             }
             await self._broadcast_to_chats(token, error_event)
 
@@ -223,6 +228,8 @@ class ConnectionBridge:
                 closed.append(ws)
         for ws in closed:
             chat_set.discard(ws)
+        if closed:
+            logger.warning("Removed {} dead chat connections (token={}...)", len(closed), token[:10])
 
 
 def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
@@ -237,7 +244,7 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
         if update_type == "agent_message_final":
             return {"type": "done", "content": content.get("text", "")}
         if update_type == "tool_result":
-            logger.info("TOOL_RESULT update: %s", json.dumps(update, ensure_ascii=False)[:500])
+            logger.info("TOOL_RESULT update: {}", json.dumps(update, ensure_ascii=False)[:500])
             result_text = update.get("content", "")
             if not isinstance(result_text, str):
                 if isinstance(result_text, dict):
@@ -250,7 +257,7 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
         if update_type == "agent_thought_chunk":
             return {"type": "thinking", "content": content.get("text", "")}
         if update_type == "tool_call":
-            logger.info("TOOL_CALL update: %s", json.dumps(update, ensure_ascii=False)[:500])
+            logger.info("TOOL_CALL update: {}", json.dumps(update, ensure_ascii=False)[:500])
             title = update.get("title", "tool")
             input_text = update.get("content", "")
             if not isinstance(input_text, str):

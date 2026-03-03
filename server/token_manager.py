@@ -1,13 +1,11 @@
 import secrets
 import time
-import logging
 
 from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from models import Token
-
-logger = logging.getLogger(__name__)
+from log import logger
 
 # A far-future timestamp (~year 2200) used for "never expires" tokens.
 _NEVER_EXPIRES = 9999999999.0
@@ -33,6 +31,7 @@ class TokenManager:
             ))
             await session.commit()
 
+        logger.info("Token generated: {}... (name={}, expires_in={}s)", token_value[:16], name, expires_in)
         return token_value
 
     async def validate(self, token: str | None) -> bool:
@@ -56,6 +55,7 @@ class TokenManager:
             )
             obj = row.scalar_one_or_none()
             if obj is None:
+                logger.warning("Token update failed: {}... not found", token[:16])
                 return False
             if name is not None:
                 obj.name = name
@@ -72,6 +72,7 @@ class TokenManager:
                 delete(Token).where(Token.token == token)
             )
             await session.commit()
+        logger.info("Token removed: {}...", token[:16])
 
     async def list_all(self) -> list[dict]:
         now = time.time()
@@ -96,4 +97,7 @@ class TokenManager:
                 delete(Token).where(Token.expires_at < time.time())
             )
             await session.commit()
-            return result.rowcount
+            count = result.rowcount
+        if count > 0:
+            logger.info("Cleaned up {} expired tokens", count)
+        return count

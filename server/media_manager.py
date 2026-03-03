@@ -1,6 +1,5 @@
 import time
 import uuid
-import logging
 from pathlib import Path
 from typing import Optional
 
@@ -8,8 +7,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from models import Media
-
-logger = logging.getLogger(__name__)
+from log import logger
 
 DEFAULT_MEDIA_DIR = Path(__file__).resolve().parent / "media"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -47,10 +45,13 @@ class MediaManager:
     ) -> Optional[dict]:
         file_size = len(file_data)
         if file_size > MAX_FILE_SIZE:
+            logger.warning("Media rejected: file too large ({} bytes, max={})", file_size, MAX_FILE_SIZE)
             return None
         if file_size == 0:
+            logger.warning("Media rejected: empty file (name={})", file_name)
             return None
         if not self._is_mime_allowed(mime_type):
+            logger.warning("Media rejected: unsupported MIME type '{}' (name={})", mime_type, file_name)
             return None
 
         media_id = f"media_{uuid.uuid4().hex}"
@@ -79,7 +80,7 @@ class MediaManager:
             await session.commit()
 
         logger.info(
-            "Stored media %s (%s, %d bytes) by %s",
+            "Stored media {} ({}, {} bytes) by {}...",
             media_id, mime_type, file_size, uploaded_by[:10],
         )
         return {
@@ -119,6 +120,7 @@ class MediaManager:
         stored_name = media_id + ext
         file_path = self._media_dir / stored_name
         if not file_path.is_file():
+            logger.error("Media file missing on disk: {} (path={})", media_id, file_path)
             return None
         return file_path
 
@@ -139,7 +141,7 @@ class MediaManager:
                     if file_path.is_file():
                         file_path.unlink()
                 except OSError:
-                    logger.warning("Failed to delete media file: %s", file_path)
+                    logger.warning("Failed to delete media file: {}", file_path)
                 count += 1
 
             if rows:
@@ -147,7 +149,7 @@ class MediaManager:
                     delete(Media).where(Media.expires_at < now)
                 )
                 await session.commit()
-                logger.info("Cleaned up %d expired media files", count)
+                logger.info("Cleaned up {} expired media files", count)
 
         return count
 

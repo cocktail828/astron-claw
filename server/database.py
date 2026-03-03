@@ -1,4 +1,3 @@
-import logging
 from typing import AsyncGenerator
 from urllib.parse import quote_plus
 
@@ -12,8 +11,7 @@ from sqlalchemy.ext.asyncio import (
 
 from config import MysqlConfig
 from models import Base
-
-logger = logging.getLogger(__name__)
+from log import logger
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -33,6 +31,7 @@ async def _ensure_database(config: MysqlConfig) -> None:
                 f"CREATE DATABASE IF NOT EXISTS `{config.database}` "
                 f"DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
             )
+        logger.info("Ensured database '{}' exists", config.database)
     finally:
         conn.close()
 
@@ -65,7 +64,7 @@ async def init_db(config: MysqlConfig) -> None:
     async with _engine.connect() as conn:
         await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
 
-    logger.info("MySQL connected: %s:%s/%s", config.host, config.port, config.database)
+    logger.info("MySQL connected: {}:{}/{}", config.host, config.port, config.database)
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
