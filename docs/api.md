@@ -761,16 +761,28 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 {"type": "tool_call", "name": "Read file", "input": "src/main.py"}
 ```
 
+#### `tool_result` — 工具执行结果
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"tool_result"` |
+| `content` | string | 工具执行结果文本 |
+
+```json
+{"type": "tool_result", "content": "Tool output: success"}
+```
+
 #### `done` — 本轮回复结束
 
-收到此消息表示 Bot 对当前提问的回复已完成。
+收到此消息表示 Bot 对当前提问的回复已完成。`content` 字段可选，包含最终完整文本。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `type` | string | `"done"` |
+| `content` | string | 最终完整回复文本（可选，可为空） |
 
 ```json
-{"type": "done"}
+{"type": "done", "content": "完整的回复文本"}
 ```
 
 #### `error` — 错误
@@ -986,6 +998,10 @@ ws.onmessage = (event) => {
       console.log(`\n[Tool: ${msg.name}] ${msg.input}`);
       break;
 
+    case 'tool_result':
+      console.log(`\n[Tool Result] ${msg.content}`);
+      break;
+
     case 'done':
       console.log('\n--- Reply complete ---');
       console.log('Full reply:', assistantText);
@@ -1059,6 +1075,9 @@ async def chat(token: str, message: str):
 
             elif msg_type == "tool_call":
                 print(f"\n[Tool: {msg['name']}] {msg['input']}")
+
+            elif msg_type == "tool_result":
+                print(f"\n[Tool Result] {msg['content']}")
 
             elif msg_type == "done":
                 print("\n--- Reply complete ---")
@@ -1261,9 +1280,11 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 
 | 类型 | 说明 | Chat 端接收为 |
 |------|------|-------------|
-| `agent_message_chunk` | Bot 回复文本片段 | `chunk` |
+| `agent_message_chunk` | Bot 回复文本片段（token 级别增量） | `chunk` |
+| `agent_message_final` | Bot 回复完成（含最终完整文本） | `done`（含 content） |
 | `agent_thought_chunk` | Bot 思考过程片段 | `thinking` |
 | `tool_call` | 工具调用 | `tool_call` |
+| `tool_result` | 工具执行结果 | `tool_result` |
 | `agent_media` | Bot 发送媒体文件 | `message`（含 media 对象） |
 
 **回复文本片段示例：**
