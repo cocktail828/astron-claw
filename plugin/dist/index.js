@@ -57,6 +57,18 @@ function getRuntime() {
   return _runtime;
 }
 
+// Map<sessionKey, { bridgeClient, sessionId }>
+const _activeSessionCtx = new Map();
+
+// Map<toolCtxKey, { bridgeClient, sessionId }> — per-invocation mapping
+// for after_tool_call (SDK bug: ctx.sessionKey is undefined there).
+// Key = "toolName\0paramsJSON", set in before_tool_call, consumed in after_tool_call.
+const _pendingToolCtx = new Map();
+
+function _toolCtxKey(toolName, params) {
+  return `${toolName}\0${JSON.stringify(params ?? "")}`;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -865,18 +877,7 @@ async function handleJsonRpcPrompt(rpcMsg, account, bridgeClient) {
           return;
         }
         if (kind === "tool") {
-          // Tool result
-          bridgeClient.send({
-            jsonrpc: "2.0",
-            method: "session/update",
-            params: {
-              sessionId,
-              update: {
-                sessionUpdate: "tool_result",
-                content: { type: "text", text },
-              },
-            },
-          });
+          // Ignore — after_tool_call hook already sent tool results
           return;
         }
         // "final" or undefined — send completion
@@ -897,6 +898,7 @@ async function handleJsonRpcPrompt(rpcMsg, account, bridgeClient) {
   // Dispatch through the OpenClaw SDK using onPartialReply for token-level streaming.
   // onPartialReply receives cumulative text on each token; we compute the delta
   // and send only the new portion as a chunk (same approach as adp-openclaw).
+  _activeSessionCtx.set(sessionKey, { bridgeClient, sessionId });
   try {
     const cfg = rt.config?.loadConfig?.() ?? {};
 
@@ -907,22 +909,6 @@ async function handleJsonRpcPrompt(rpcMsg, account, bridgeClient) {
         dispatcherOptions,
         replyOptions: {
           disableBlockStreaming: false,
-          onToolStart: async ({ name, phase }) => {
-            if (phase !== "start") return;
-            bridgeClient.send({
-              jsonrpc: "2.0",
-              method: "session/update",
-              params: {
-                sessionId,
-                update: {
-                  sessionUpdate: "tool_call",
-                  title: name || "tool",
-                  status: "running",
-                  content: [],
-                },
-              },
-            });
-          },
           onPartialReply: async (payload) => {
             const fullText = payload?.text ?? "";
             if (!fullText) return;
@@ -975,6 +961,12 @@ async function handleJsonRpcPrompt(rpcMsg, account, bridgeClient) {
       id: requestId,
       error: { code: -32000, message: String(err) },
     });
+  } finally {
+    _activeSessionCtx.delete(sessionKey);
+    // Sweep any leaked _pendingToolCtx entries for this session
+    for (const [k, v] of _pendingToolCtx) {
+      if (v._sk === sessionKey) _pendingToolCtx.delete(k);
+    }
   }
 }
 
@@ -1653,6 +1645,59 @@ const plugin = {
 
     // Register as a Channel (not a Service)
     api.registerChannel({ plugin: astronClawPlugin });
+
+    // Hook: before_tool_call – send tool input to bridge
+    api.on("before_tool_call", (event, ctx) => {
+      const sessionCtx = _activeSessionCtx.get(ctx.sessionKey);
+      if (!sessionCtx) return;
+      // Stash for after_tool_call which lacks ctx.sessionKey (SDK bug)
+      _pendingToolCtx.set(_toolCtxKey(event.toolName, event.params), { ...sessionCtx, _sk: ctx.sessionKey });
+      const { bridgeClient, sessionId } = sessionCtx;
+      const inputText = typeof event.params === "object"
+        ? JSON.stringify(event.params) : String(event.params ?? "");
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            title: event.toolName || "tool",
+            status: "running",
+            content: inputText,
+          },
+        },
+      });
+    });
+
+    // Hook: after_tool_call – send tool result to bridge
+    // NOTE: SDK bug – ctx.sessionKey is undefined in after_tool_call,
+    // so we look up via _pendingToolCtx keyed on toolName+params.
+    api.on("after_tool_call", (event, ctx) => {
+      // SDK fires after_tool_call twice; only handle the complete one (has durationMs)
+      if (event.durationMs === undefined) return;
+      const key = _toolCtxKey(event.toolName, event.params);
+      const sessionCtx = _activeSessionCtx.get(ctx.sessionKey) || _pendingToolCtx.get(key);
+      _pendingToolCtx.delete(key); // cleanup
+      if (!sessionCtx) return;
+      const { bridgeClient, sessionId } = sessionCtx;
+      const resultText = event.error
+        ? `Error: ${event.error}`
+        : (typeof event.result === "string" ? event.result : JSON.stringify(event.result ?? ""));
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_result",
+            title: event.toolName || "tool",
+            status: event.error ? "error" : "completed",
+            content: resultText,
+          },
+        },
+      });
+    });
 
     logger.info(`AstronClaw v${PLUGIN_VERSION} registered as channel plugin`);
   },

@@ -238,19 +238,23 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
             return {"type": "done", "content": content.get("text", "")}
         if update_type == "tool_result":
             logger.info("TOOL_RESULT update: %s", json.dumps(update, ensure_ascii=False)[:500])
-            return {"type": "tool_result", "content": content.get("text", "")}
+            result_text = update.get("content", "")
+            if not isinstance(result_text, str):
+                if isinstance(result_text, dict):
+                    result_text = result_text.get("text", "")
+                else:
+                    result_text = json.dumps(result_text) if result_text else ""
+            title = update.get("title", "tool")
+            status = update.get("status", "completed")
+            return {"type": "tool_result", "name": title, "status": status, "content": result_text}
         if update_type == "agent_thought_chunk":
             return {"type": "thinking", "content": content.get("text", "")}
         if update_type == "tool_call":
             logger.info("TOOL_CALL update: %s", json.dumps(update, ensure_ascii=False)[:500])
             title = update.get("title", "tool")
-            tool_content = update.get("content", [])
-            input_text = ""
-            if tool_content and isinstance(tool_content, list):
-                for item in tool_content:
-                    inner = item.get("content", {}) if isinstance(item, dict) else {}
-                    if isinstance(inner, dict):
-                        input_text += inner.get("text", "")
+            input_text = update.get("content", "")
+            if not isinstance(input_text, str):
+                input_text = json.dumps(input_text) if input_text else ""
             return {"type": "tool_call", "name": title, "input": input_text}
 
         # Handle media messages from bot

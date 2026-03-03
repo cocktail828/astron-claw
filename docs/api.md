@@ -755,10 +755,10 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 |------|------|------|
 | `type` | string | `"tool_call"` |
 | `name` | string | 工具名称 |
-| `input` | string | 工具输入 |
+| `input` | string | 工具输入参数（JSON 字符串） |
 
 ```json
-{"type": "tool_call", "name": "Read file", "input": "src/main.py"}
+{"type": "tool_call", "name": "read", "input": "{\"path\":\"src/main.py\"}"}
 ```
 
 #### `tool_result` — 工具执行结果
@@ -766,10 +766,12 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `type` | string | `"tool_result"` |
+| `name` | string | 工具名称 |
+| `status` | string | 执行状态：`"completed"` 或 `"error"` |
 | `content` | string | 工具执行结果文本 |
 
 ```json
-{"type": "tool_result", "content": "Tool output: success"}
+{"type": "tool_result", "name": "read", "status": "completed", "content": "file contents here..."}
 ```
 
 #### `done` — 本轮回复结束
@@ -1283,8 +1285,8 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 | `agent_message_chunk` | Bot 回复文本片段（token 级别增量） | `chunk` |
 | `agent_message_final` | Bot 回复完成（含最终完整文本） | `done`（含 content） |
 | `agent_thought_chunk` | Bot 思考过程片段 | `thinking` |
-| `tool_call` | 工具调用 | `tool_call` |
-| `tool_result` | 工具执行结果 | `tool_result` |
+| `tool_call` | 工具调用（含 title/status/content 字段） | `tool_call` |
+| `tool_result` | 工具执行结果（含 title/status/content 字段） | `tool_result` |
 | `agent_media` | Bot 发送媒体文件 | `message`（含 media 对象） |
 
 **回复文本片段示例：**
@@ -1323,10 +1325,25 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
   "params": {
     "update": {
       "sessionUpdate": "tool_call",
-      "title": "Read file",
-      "content": [
-        {"content": {"type": "text", "text": "src/main.py"}}
-      ]
+      "title": "read",
+      "status": "running",
+      "content": "{\"path\":\"src/main.py\"}"
+    }
+  }
+}
+```
+
+**工具执行结果示例：**
+
+```json
+{
+  "method": "session/update",
+  "params": {
+    "update": {
+      "sessionUpdate": "tool_result",
+      "title": "read",
+      "status": "completed",
+      "content": "file contents here..."
     }
   }
 }
