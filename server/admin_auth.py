@@ -1,79 +1,91 @@
 import hashlib
 import secrets
-import sqlite3
-import time
-from pathlib import Path
+import logging
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "tokens.db"
+from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from models import AdminConfig
+
+logger = logging.getLogger(__name__)
 
 SESSION_TTL = 86400  # 24 hours
+_SESSION_PREFIX = "admin:session:"
 
 
 class AdminAuth:
-    """Admin password auth with SQLite storage and in-memory sessions."""
+    """Admin password auth with MySQL storage and Redis-backed sessions."""
 
-    def __init__(self, db_path: Path = DEFAULT_DB_PATH):
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=DELETE")
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS admin_config ("
-            "  key TEXT PRIMARY KEY,"
-            "  value TEXT NOT NULL"
-            ")"
-        )
-        self._conn.commit()
-        # session_token -> expire_time
-        self._sessions: dict[str, float] = {}
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        redis: Redis,
+    ):
+        self._session = session_factory
+        self._redis = redis
 
-    def is_password_set(self) -> bool:
-        row = self._conn.execute(
-            "SELECT value FROM admin_config WHERE key = 'password_hash'"
-        ).fetchone()
-        return row is not None
+    async def is_password_set(self) -> bool:
+        async with self._session() as session:
+            row = await session.execute(
+                select(AdminConfig.value).where(AdminConfig.key == "password_hash")
+            )
+            return row.scalar_one_or_none() is not None
 
-    def set_password(self, password: str) -> None:
+    async def set_password(self, password: str) -> None:
         salt = secrets.token_hex(16)
         pw_hash = hashlib.sha256((salt + password).encode()).hexdigest()
-        self._conn.execute(
-            "INSERT OR REPLACE INTO admin_config (key, value) VALUES ('password_salt', ?)",
-            (salt,),
-        )
-        self._conn.execute(
-            "INSERT OR REPLACE INTO admin_config (key, value) VALUES ('password_hash', ?)",
-            (pw_hash,),
-        )
-        self._conn.commit()
 
-    def verify_password(self, password: str) -> bool:
-        salt_row = self._conn.execute(
-            "SELECT value FROM admin_config WHERE key = 'password_salt'"
-        ).fetchone()
-        hash_row = self._conn.execute(
-            "SELECT value FROM admin_config WHERE key = 'password_hash'"
-        ).fetchone()
-        if not salt_row or not hash_row:
+        async with self._session() as session:
+            # Upsert salt
+            result = await session.execute(
+                select(AdminConfig).where(AdminConfig.key == "password_salt")
+            )
+            existing_salt = result.scalar_one_or_none()
+            if existing_salt:
+                existing_salt.value = salt
+            else:
+                session.add(AdminConfig(key="password_salt", value=salt))
+
+            # Upsert hash
+            result = await session.execute(
+                select(AdminConfig).where(AdminConfig.key == "password_hash")
+            )
+            existing_hash = result.scalar_one_or_none()
+            if existing_hash:
+                existing_hash.value = pw_hash
+            else:
+                session.add(AdminConfig(key="password_hash", value=pw_hash))
+
+            await session.commit()
+
+    async def verify_password(self, password: str) -> bool:
+        async with self._session() as session:
+            salt_row = await session.execute(
+                select(AdminConfig.value).where(AdminConfig.key == "password_salt")
+            )
+            hash_row = await session.execute(
+                select(AdminConfig.value).where(AdminConfig.key == "password_hash")
+            )
+            salt = salt_row.scalar_one_or_none()
+            stored_hash = hash_row.scalar_one_or_none()
+
+        if not salt or not stored_hash:
             return False
-        expected = hashlib.sha256(
-            (salt_row[0] + password).encode()
-        ).hexdigest()
-        return secrets.compare_digest(expected, hash_row[0])
+        expected = hashlib.sha256((salt + password).encode()).hexdigest()
+        return secrets.compare_digest(expected, stored_hash)
 
-    def create_session(self) -> str:
+    async def create_session(self) -> str:
         token = secrets.token_hex(32)
-        self._sessions[token] = time.time() + SESSION_TTL
+        await self._redis.setex(f"{_SESSION_PREFIX}{token}", SESSION_TTL, "1")
         return token
 
-    def validate_session(self, session_token: str | None) -> bool:
+    async def validate_session(self, session_token: str | None) -> bool:
         if not session_token:
             return False
-        expire = self._sessions.get(session_token)
-        if expire is None:
-            return False
-        if time.time() > expire:
-            del self._sessions[session_token]
-            return False
-        return True
+        result = await self._redis.exists(f"{_SESSION_PREFIX}{session_token}")
+        return result > 0
 
-    def remove_session(self, session_token: str | None) -> None:
+    async def remove_session(self, session_token: str | None) -> None:
         if session_token:
-            self._sessions.pop(session_token, None)
+            await self._redis.delete(f"{_SESSION_PREFIX}{session_token}")

@@ -1,10 +1,14 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Cookie, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
+from config import load_config
+from database import init_db, get_session_factory, close_db
+from cache import init_redis, close_redis
 from token_manager import TokenManager
 from bridge import ConnectionBridge
 from admin_auth import AdminAuth
@@ -13,20 +17,76 @@ from media_manager import MediaManager, MAX_FILE_SIZE
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Astron Claw Bridge Server")
-token_manager = TokenManager()
-bridge = ConnectionBridge()
-admin_auth = AdminAuth()
-media_manager = MediaManager()
+# These will be initialized during lifespan startup
+token_manager: TokenManager
+bridge: ConnectionBridge
+admin_auth: AdminAuth
+media_manager: MediaManager
 
-# Wire media_manager into bridge so it can resolve download URLs
-bridge.set_media_manager(media_manager)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global token_manager, bridge, admin_auth, media_manager
+
+    config = load_config()
+
+    # Initialize MySQL
+    await init_db(config.mysql)
+    session_factory = get_session_factory()
+
+    # Initialize Redis
+    redis = await init_redis(config.redis)
+
+    # Initialize managers
+    token_manager = TokenManager(session_factory)
+    admin_auth = AdminAuth(session_factory, redis)
+    media_manager = MediaManager(session_factory)
+    bridge = ConnectionBridge(redis)
+    bridge.set_media_manager(media_manager)
+
+    logger.info("Astron Claw Bridge Server started")
+    yield
+
+    # Shutdown
+    await close_redis()
+    await close_db()
+    logger.info("Astron Claw Bridge Server stopped")
+
+
+app = FastAPI(title="Astron Claw Bridge Server", lifespan=lifespan)
 
 _server_dir = Path(__file__).resolve().parent
-# Repo layout: server/ and frontend/ are siblings under project root
-# Installed layout: frontend/ is a subdirectory of the server dir
 _candidate = _server_dir.parent / "frontend"
 frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
+
+
+# ── Health Check ──────────────────────────────────────────────────────────────
+
+
+@app.get("/api/health")
+async def health_check():
+    mysql_ok = False
+    redis_ok = False
+
+    try:
+        from database import _engine
+        if _engine is not None:
+            async with _engine.connect() as conn:
+                await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+            mysql_ok = True
+    except Exception:
+        logger.warning("MySQL health check failed")
+
+    try:
+        from cache import get_redis
+        r = get_redis()
+        await r.ping()
+        redis_ok = True
+    except Exception:
+        logger.warning("Redis health check failed")
+
+    status = "ok" if (mysql_ok and redis_ok) else "degraded"
+    return {"status": status, "mysql": mysql_ok, "redis": redis_ok}
 
 
 # ── HTTP API ──────────────────────────────────────────────────────────────────
@@ -34,14 +94,14 @@ frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
 
 @app.post("/api/token")
 async def create_token():
-    token = token_manager.generate()
+    token = await token_manager.generate()
     return {"token": token}
 
 
 @app.post("/api/token/validate")
 async def validate_token(body: dict):
     token = body.get("token", "")
-    valid = token_manager.validate(token)
+    valid = await token_manager.validate(token)
     return {
         "valid": valid,
         "bot_connected": bridge.is_bot_connected(token) if valid else False,
@@ -70,20 +130,20 @@ async def serve_admin():
 @app.get("/api/admin/auth/status")
 async def admin_auth_status(admin_session: str | None = Cookie(default=None)):
     return {
-        "need_setup": not admin_auth.is_password_set(),
-        "authenticated": admin_auth.validate_session(admin_session),
+        "need_setup": not await admin_auth.is_password_set(),
+        "authenticated": await admin_auth.validate_session(admin_session),
     }
 
 
 @app.post("/api/admin/auth/setup")
 async def admin_auth_setup(body: dict):
-    if admin_auth.is_password_set():
+    if await admin_auth.is_password_set():
         return JSONResponse({"error": "Password already set"}, status_code=400)
     password = body.get("password", "")
     if len(password) < 4:
         return JSONResponse({"error": "Password too short"}, status_code=400)
-    admin_auth.set_password(password)
-    session = admin_auth.create_session()
+    await admin_auth.set_password(password)
+    session = await admin_auth.create_session()
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
         key="admin_session", value=session,
@@ -95,9 +155,9 @@ async def admin_auth_setup(body: dict):
 @app.post("/api/admin/auth/login")
 async def admin_auth_login(body: dict):
     password = body.get("password", "")
-    if not admin_auth.verify_password(password):
+    if not await admin_auth.verify_password(password):
         return JSONResponse({"error": "Wrong password"}, status_code=401)
-    session = admin_auth.create_session()
+    session = await admin_auth.create_session()
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
         key="admin_session", value=session,
@@ -108,7 +168,7 @@ async def admin_auth_login(body: dict):
 
 @app.post("/api/admin/auth/logout")
 async def admin_auth_logout(admin_session: str | None = Cookie(default=None)):
-    admin_auth.remove_session(admin_session)
+    await admin_auth.remove_session(admin_session)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(key="admin_session", path="/")
     return resp
@@ -117,18 +177,18 @@ async def admin_auth_logout(admin_session: str | None = Cookie(default=None)):
 # ── Protected Admin API ──────────────────────────────────────────────────────
 
 
-def _require_admin(admin_session: str | None):
-    if not admin_auth.validate_session(admin_session):
+async def _require_admin(admin_session: str | None):
+    if not await admin_auth.validate_session(admin_session):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return None
 
 
 @app.get("/api/admin/tokens")
 async def list_tokens(admin_session: str | None = Cookie(default=None)):
-    denied = _require_admin(admin_session)
+    denied = await _require_admin(admin_session)
     if denied:
         return denied
-    tokens = token_manager.list_all()
+    tokens = await token_manager.list_all()
     connections = bridge.get_connections_summary()
     result = []
     for t in tokens:
@@ -146,52 +206,51 @@ async def list_tokens(admin_session: str | None = Cookie(default=None)):
 
 @app.post("/api/admin/tokens")
 async def admin_create_token(body: dict = {}, admin_session: str | None = Cookie(default=None)):
-    denied = _require_admin(admin_session)
+    denied = await _require_admin(admin_session)
     if denied:
         return denied
     name = body.get("name", "")
     expires_in = body.get("expires_in", 86400)
-    token = token_manager.generate(name=name, expires_in=expires_in)
+    token = await token_manager.generate(name=name, expires_in=expires_in)
     return {"token": token}
 
 
 @app.delete("/api/admin/tokens/{token_value}")
 async def admin_delete_token(token_value: str, admin_session: str | None = Cookie(default=None)):
-    denied = _require_admin(admin_session)
+    denied = await _require_admin(admin_session)
     if denied:
         return denied
-    token_manager.remove(token_value)
+    await token_manager.remove(token_value)
     return {"ok": True}
 
 
 @app.patch("/api/admin/tokens/{token_value}")
 async def admin_update_token(token_value: str, body: dict, admin_session: str | None = Cookie(default=None)):
-    denied = _require_admin(admin_session)
+    denied = await _require_admin(admin_session)
     if denied:
         return denied
     name = body.get("name")
     expires_in = body.get("expires_in")
-    if not token_manager.update(token_value, name=name, expires_in=expires_in):
+    if not await token_manager.update(token_value, name=name, expires_in=expires_in):
         return JSONResponse({"error": "Token not found"}, status_code=404)
     return {"ok": True}
 
 
 @app.post("/api/admin/cleanup")
 async def admin_cleanup(admin_session: str | None = Cookie(default=None)):
-    denied = _require_admin(admin_session)
+    denied = await _require_admin(admin_session)
     if denied:
         return denied
-    token_count = token_manager.cleanup_expired()
-    media_count = media_manager.cleanup_expired()
+    token_count = await token_manager.cleanup_expired()
+    media_count = await media_manager.cleanup_expired()
     return {"removed_tokens": token_count, "removed_media": media_count}
 
 
 # ── Media API ────────────────────────────────────────────────────────────────
 
 
-def _validate_token_header(authorization: str | None) -> str | None:
-    """Extract and validate token from Authorization header (Bearer scheme).
-    Returns the token string if valid, None otherwise."""
+async def _validate_token_header(authorization: str | None) -> str | None:
+    """Extract and validate token from Authorization header (Bearer scheme)."""
     if not authorization:
         return None
     parts = authorization.split(" ", 1)
@@ -199,7 +258,7 @@ def _validate_token_header(authorization: str | None) -> str | None:
         token = parts[1]
     else:
         token = authorization
-    if token_manager.validate(token):
+    if await token_manager.validate(token):
         return token
     return None
 
@@ -209,11 +268,10 @@ async def upload_media(
     file: UploadFile = File(...),
     authorization: str | None = Header(default=None),
 ):
-    token = _validate_token_header(authorization)
+    token = await _validate_token_header(authorization)
     if not token:
         return JSONResponse({"error": "Invalid or missing token"}, status_code=401)
 
-    # Read file content
     file_data = await file.read()
 
     if len(file_data) > MAX_FILE_SIZE:
@@ -225,7 +283,7 @@ async def upload_media(
     mime_type = file.content_type or "application/octet-stream"
     file_name = file.filename or "unnamed"
 
-    result = media_manager.store(file_data, file_name, mime_type, token)
+    result = await media_manager.store(file_data, file_name, mime_type, token)
     if not result:
         return JSONResponse({"error": "Invalid file or unsupported type"}, status_code=400)
 
@@ -239,18 +297,17 @@ async def download_media(
     authorization: str | None = Header(default=None),
     token: str = Query(default=""),
 ):
-    # Accept token from either Authorization header or query param
-    auth_token = _validate_token_header(authorization)
+    auth_token = await _validate_token_header(authorization)
     if not auth_token and token:
-        auth_token = token if token_manager.validate(token) else None
+        auth_token = token if await token_manager.validate(token) else None
     if not auth_token:
         return JSONResponse({"error": "Invalid or missing token"}, status_code=401)
 
-    meta = media_manager.get_metadata(media_id)
+    meta = await media_manager.get_metadata(media_id)
     if not meta:
         return JSONResponse({"error": "Media not found or expired"}, status_code=404)
 
-    file_path = media_manager.get_file_path(media_id)
+    file_path = await media_manager.get_file_path(media_id)
     if not file_path:
         return JSONResponse({"error": "Media file missing"}, status_code=404)
 
@@ -269,9 +326,8 @@ async def ws_bot(
     ws: WebSocket,
     token: str = Query(default=""),
 ):
-    # Also check header for token
     bot_token = token or (ws.headers.get("x-astron-bot-token", ""))
-    if not token_manager.validate(bot_token):
+    if not await token_manager.validate(bot_token):
         await ws.accept()
         await ws.close(code=4001, reason="Invalid or missing bot token")
         return
@@ -294,7 +350,7 @@ async def ws_bot(
     except Exception:
         logger.exception("Bot connection error: %s...", bot_token[:10])
     finally:
-        bridge.unregister_bot(bot_token)
+        await bridge.unregister_bot(bot_token)
         await bridge.notify_bot_disconnected(bot_token)
 
 
@@ -306,7 +362,7 @@ async def ws_chat(
     ws: WebSocket,
     token: str = Query(default=""),
 ):
-    if not token_manager.validate(token):
+    if not await token_manager.validate(token):
         await ws.accept()
         await ws.close(code=4001, reason="Invalid or missing token")
         return
@@ -315,15 +371,13 @@ async def ws_chat(
     bridge.register_chat(token, ws)
     logger.info("Chat client connected: %s...", token[:10])
 
-    # Notify chat whether bot is currently online
     await ws.send_json({
         "type": "bot_status",
         "connected": bridge.is_bot_connected(token),
     })
 
-    # Create initial session and send session_info
-    session_id, session_number = bridge.create_session(token)
-    sessions, active_id = bridge.get_sessions(token)
+    session_id, session_number = await bridge.create_session(token)
+    sessions, active_id = await bridge.get_sessions(token)
     await ws.send_json({
         "type": "session_info",
         "sessionId": session_id,
@@ -338,8 +392,8 @@ async def ws_chat(
             msg_type = data.get("type", "")
 
             if msg_type == "new_session":
-                new_id, new_num = bridge.create_session(token)
-                sessions, active_id = bridge.get_sessions(token)
+                new_id, new_num = await bridge.create_session(token)
+                sessions, active_id = await bridge.get_sessions(token)
                 await ws.send_json({
                     "type": "new_session_ack",
                     "sessionId": new_id,
@@ -351,8 +405,8 @@ async def ws_chat(
 
             if msg_type == "switch_session":
                 target_id = data.get("sessionId", "")
-                if bridge.switch_session(token, target_id):
-                    sessions, active_id = bridge.get_sessions(token)
+                if await bridge.switch_session(token, target_id):
+                    sessions, active_id = await bridge.get_sessions(token)
                     await ws.send_json({
                         "type": "switch_session_ack",
                         "sessionId": target_id,
@@ -371,12 +425,10 @@ async def ws_chat(
                 content = data.get("content", "")
                 media = data.get("media")
 
-                # Text messages require content
                 if msg_type_inner == "text" and not content:
                     await ws.send_json({"type": "error", "content": "Empty message"})
                     continue
 
-                # Media messages require media info
                 if msg_type_inner in ("image", "file", "audio", "video") and not media:
                     await ws.send_json({"type": "error", "content": "Missing media info"})
                     continue

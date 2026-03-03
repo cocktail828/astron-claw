@@ -2,9 +2,14 @@ import json
 import uuid
 import logging
 from typing import Optional
+
 from fastapi import WebSocket
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
+
+_SESSIONS_PREFIX = "bridge:sessions:"
+_ACTIVE_PREFIX = "bridge:active:"
 
 
 class ConnectionBridge:
@@ -12,21 +17,20 @@ class ConnectionBridge:
 
     Each token can have one bot WebSocket and multiple chat WebSockets.
     Messages flow: chat -> server (JSON-RPC) -> bot -> server -> chat.
+    Session state is persisted in Redis; WebSocket refs stay in-memory.
     """
 
-    def __init__(self):
-        # token -> bot WebSocket
+    def __init__(self, redis: Redis):
+        # token -> bot WebSocket (in-memory, not serializable)
         self._bots: dict[str, WebSocket] = {}
-        # token -> set of chat WebSockets
+        # token -> set of chat WebSockets (in-memory)
         self._chats: dict[str, set[WebSocket]] = {}
-        # request_id -> token (to route bot responses back)
+        # request_id -> token (process-local)
         self._pending_requests: dict[str, str] = {}
-        # token -> ordered list of session IDs
-        self._session_list: dict[str, list[str]] = {}
-        # token -> currently active session ID
-        self._active_session: dict[str, str] = {}
         # media manager reference (set via set_media_manager)
         self._media_manager = None
+        # Redis client for session persistence
+        self._redis = redis
 
     def set_media_manager(self, media_manager) -> None:
         """Set the media manager for resolving download URLs in messages."""
@@ -39,10 +43,10 @@ class ConnectionBridge:
         self._bots[token] = ws
         return True
 
-    def unregister_bot(self, token: str) -> None:
+    async def unregister_bot(self, token: str) -> None:
         self._bots.pop(token, None)
-        self._session_list.pop(token, None)
-        self._active_session.pop(token, None)
+        await self._redis.delete(f"{_SESSIONS_PREFIX}{token}")
+        await self._redis.delete(f"{_ACTIVE_PREFIX}{token}")
 
     def register_chat(self, token: str, ws: WebSocket) -> None:
         if token not in self._chats:
@@ -58,33 +62,32 @@ class ConnectionBridge:
     def is_bot_connected(self, token: str) -> bool:
         return token in self._bots
 
-    def create_session(self, token: str) -> tuple[str, int]:
-        """Create a new session, append to list, set as active. Returns (session_id, session_number)."""
+    async def create_session(self, token: str) -> tuple[str, int]:
+        """Create a new session, append to Redis list, set as active."""
         session_id = str(uuid.uuid4())
-        if token not in self._session_list:
-            self._session_list[token] = []
-        self._session_list[token].append(session_id)
-        self._active_session[token] = session_id
-        session_number = len(self._session_list[token])
+        key = f"{_SESSIONS_PREFIX}{token}"
+        await self._redis.rpush(key, session_id)
+        await self._redis.set(f"{_ACTIVE_PREFIX}{token}", session_id)
+        session_number = await self._redis.llen(key)
         return session_id, session_number
 
-    def reset_session(self, token: str) -> tuple[str, int]:
+    async def reset_session(self, token: str) -> tuple[str, int]:
         """Reset the session for a token by creating a new one."""
-        return self.create_session(token)
+        return await self.create_session(token)
 
-    def switch_session(self, token: str, session_id: str) -> bool:
+    async def switch_session(self, token: str, session_id: str) -> bool:
         """Switch the active session. Returns False if session_id not found."""
-        sessions = self._session_list.get(token, [])
+        sessions = await self._redis.lrange(f"{_SESSIONS_PREFIX}{token}", 0, -1)
         if session_id not in sessions:
             return False
-        self._active_session[token] = session_id
+        await self._redis.set(f"{_ACTIVE_PREFIX}{token}", session_id)
         return True
 
-    def get_sessions(self, token: str) -> tuple[list[tuple[str, int]], str]:
+    async def get_sessions(self, token: str) -> tuple[list[tuple[str, int]], str]:
         """Return ([(id, number), ...], active_id) for the token."""
-        sessions = self._session_list.get(token, [])
+        sessions = await self._redis.lrange(f"{_SESSIONS_PREFIX}{token}", 0, -1)
         numbered = [(sid, i + 1) for i, sid in enumerate(sessions)]
-        active_id = self._active_session.get(token, "")
+        active_id = await self._redis.get(f"{_ACTIVE_PREFIX}{token}") or ""
         return numbered, active_id
 
     async def send_to_bot(
@@ -99,9 +102,9 @@ class ConnectionBridge:
         if not bot_ws:
             return None
 
-        session_id = self._active_session.get(token)
+        session_id = await self._redis.get(f"{_ACTIVE_PREFIX}{token}")
         if not session_id:
-            session_id, _ = self.create_session(token)
+            session_id, _ = await self.create_session(token)
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         self._pending_requests[request_id] = token
@@ -112,7 +115,6 @@ class ConnectionBridge:
         if msg_type == "text":
             content_items.append({"type": "text", "text": user_message})
         elif msg_type in ("image", "file", "audio", "video"):
-            # Include media metadata in the prompt
             media_info = {}
             if media:
                 media_info = {
@@ -122,8 +124,6 @@ class ConnectionBridge:
                     "fileSize": media.get("fileSize", 0),
                     "downloadUrl": media.get("downloadUrl", ""),
                 }
-
-            # For media messages, include a text description and media reference
             description = user_message or f"[{msg_type}]"
             content_items.append({"type": "text", "text": description})
             content_items.append({

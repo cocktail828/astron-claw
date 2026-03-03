@@ -4,3 +4,5 @@ __pycache__/
 *.log
 *.db
 .DS_Store
+.env
+PLAN.md
