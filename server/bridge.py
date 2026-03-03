@@ -1,4 +1,3 @@
-import asyncio
 import json
 import uuid
 import logging
@@ -24,6 +23,12 @@ class ConnectionBridge:
         self._pending_requests: dict[str, str] = {}
         # token -> current session id
         self._sessions: dict[str, str] = {}
+        # media manager reference (set via set_media_manager)
+        self._media_manager = None
+
+    def set_media_manager(self, media_manager) -> None:
+        """Set the media manager for resolving download URLs in messages."""
+        self._media_manager = media_manager
 
     def register_bot(self, token: str, ws: WebSocket) -> bool:
         """Register a bot connection. Returns False if a bot is already connected."""
@@ -50,7 +55,13 @@ class ConnectionBridge:
     def is_bot_connected(self, token: str) -> bool:
         return token in self._bots
 
-    async def send_to_bot(self, token: str, user_message: str) -> Optional[str]:
+    async def send_to_bot(
+        self,
+        token: str,
+        user_message: str,
+        msg_type: str = "text",
+        media: Optional[dict] = None,
+    ) -> Optional[str]:
         """Create a JSON-RPC request and send it to the bot. Returns request_id."""
         bot_ws = self._bots.get(token)
         if not bot_ws:
@@ -64,6 +75,34 @@ class ConnectionBridge:
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         self._pending_requests[request_id] = token
 
+        # Build prompt content based on message type
+        content_items = []
+
+        if msg_type == "text":
+            content_items.append({"type": "text", "text": user_message})
+        elif msg_type in ("image", "file", "audio", "video"):
+            # Include media metadata in the prompt
+            media_info = {}
+            if media:
+                media_info = {
+                    "mediaId": media.get("mediaId", ""),
+                    "fileName": media.get("fileName", ""),
+                    "mimeType": media.get("mimeType", ""),
+                    "fileSize": media.get("fileSize", 0),
+                    "downloadUrl": media.get("downloadUrl", ""),
+                }
+
+            # For media messages, include a text description and media reference
+            description = user_message or f"[{msg_type}]"
+            content_items.append({"type": "text", "text": description})
+            content_items.append({
+                "type": "media",
+                "msgType": msg_type,
+                "media": media_info,
+            })
+        else:
+            content_items.append({"type": "text", "text": user_message})
+
         rpc_request = {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -71,7 +110,7 @@ class ConnectionBridge:
             "params": {
                 "sessionId": session_id,
                 "prompt": {
-                    "content": [{"type": "text", "text": user_message}]
+                    "content": content_items,
                 },
             },
         }
@@ -187,6 +226,23 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
                     if isinstance(inner, dict):
                         result_text += inner.get("text", "")
             return {"type": "tool_result", "content": result_text}
+
+        # Handle media messages from bot
+        if update_type == "agent_media":
+            media = content.get("media", {})
+            return {
+                "type": "message",
+                "msgType": content.get("msgType", "file"),
+                "content": content.get("text", ""),
+                "media": {
+                    "mediaId": media.get("mediaId", ""),
+                    "fileName": media.get("fileName", ""),
+                    "mimeType": media.get("mimeType", ""),
+                    "fileSize": media.get("fileSize", 0),
+                    "downloadUrl": f"/api/media/download/{media.get('mediaId', '')}",
+                },
+            }
+
         # Forward unrecognized update types as generic chunks
         if isinstance(content, dict) and "text" in content:
             return {"type": "chunk", "content": content["text"]}
