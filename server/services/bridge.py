@@ -410,26 +410,36 @@ class ConnectionBridge:
                 logger.exception("Failed to write to stream")
 
     async def _listen_stream(self) -> None:
-        """Poll the Redis Stream and handle messages from other workers."""
-        # Start reading only new messages (from now on)
-        last_id = "$"
+        """Poll the Redis Stream and handle messages from other workers.
+
+        Uses XRANGE (single-key command) instead of XREAD so it works in
+        both standalone and Redis Cluster modes.
+        """
+        # Determine the latest existing ID so we only process new messages.
+        try:
+            latest = await self._redis.xrevrange(_STREAM_KEY, count=1)
+            last_id = latest[0][0] if latest else "0-0"
+        except Exception:
+            last_id = "0-0"
+
         while not self._shutting_down:
             try:
-                entries = await self._redis.xread(
-                    {_STREAM_KEY: last_id}, count=50, block=_STREAM_BLOCK_MS,
+                # Exclusive lower bound: "(" prefix skips the last_id itself
+                entries = await self._redis.xrange(
+                    _STREAM_KEY, min=f"({last_id}", count=50,
                 )
                 if not entries:
+                    await asyncio.sleep(_STREAM_BLOCK_MS / 1000)
                     continue
-                for _stream_name, messages in entries:
-                    for msg_id, fields in messages:
-                        last_id = msg_id
-                        try:
-                            data = json.loads(fields.get("data", "{}"))
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-                        if data.get("_origin") == self._worker_id:
-                            continue
-                        await self._handle_stream_message(data)
+                for msg_id, fields in entries:
+                    last_id = msg_id
+                    try:
+                        data = json.loads(fields.get("data", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if data.get("_origin") == self._worker_id:
+                        continue
+                    await self._handle_stream_message(data)
             except asyncio.CancelledError:
                 break
             except Exception:
