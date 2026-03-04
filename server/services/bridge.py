@@ -17,7 +17,6 @@ _CHAT_COUNTS_PREFIX = "bridge:chats:"          # per-worker HASH: token -> count
 _WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
 _BOT_INBOX_PREFIX = "bridge:bot_inbox:"        # LIST per token: messages TO bot
 _CHAT_INBOX_PREFIX = "bridge:chat_inbox:"      # LIST per chat: messages TO chat
-_ACTIVE_CHATS_PREFIX = "bridge:active_chats:"  # SET per token: online session_ids
 _WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
 
 _WORKER_TTL = 30        # heartbeat TTL (seconds)
@@ -51,8 +50,8 @@ class ConnectionBridge:
         self._chats: dict[str, set[WebSocket]] = {}
         # WebSocket -> (token, session_id) for cleanup on unregister
         self._chat_sessions: dict[WebSocket, tuple[str, str]] = {}
-        # request_id -> token (process-local)
-        self._pending_requests: dict[str, str] = {}
+        # request_id -> (token, session_id) for targeted response routing
+        self._pending_requests: dict[str, tuple[str, str]] = {}
         # media manager reference
         self._media_manager = None
         # Redis client for cross-worker state
@@ -150,7 +149,6 @@ class ConnectionBridge:
         await self._redis.srem(_ONLINE_BOTS_KEY, token)
         await self._redis.hdel(_BOT_WORKERS_KEY, token)
         await self._redis.delete(f"{_BOT_INBOX_PREFIX}{token}")
-        await self._redis.delete(f"{_ACTIVE_CHATS_PREFIX}{token}")
         worker_ids = await self._redis.smembers(_WORKERS_KEY)
         for wid in worker_ids:
             await self._redis.hdel(f"{_CHAT_COUNTS_PREFIX}{wid}", token)
@@ -167,14 +165,38 @@ class ConnectionBridge:
         chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
         await self._redis.hincrby(chat_key, token, 1)
         await self._redis.expire(chat_key, _WORKER_TTL)
-        # Register for cross-worker discovery
-        await self._redis.sadd(f"{_ACTIVE_CHATS_PREFIX}{token}", session_id)
         # Start polling chat inbox
         task_key = f"chat:{token}:{session_id}"
         self._poll_tasks[task_key] = asyncio.create_task(
             self._poll_chat_inbox(token, session_id, ws)
         )
         logger.debug("Chat registered: session={} (token={}...)", session_id[:8], token[:10])
+
+    async def update_chat_session(self, ws: WebSocket, new_session_id: str) -> None:
+        """Update a chat connection's session: stop old poll task, start new one."""
+        info = self._chat_sessions.get(ws)
+        if not info:
+            return
+        token, old_session_id = info
+        if old_session_id == new_session_id:
+            return
+        # Stop old poll task and clean old inbox
+        old_key = f"chat:{token}:{old_session_id}"
+        task = self._poll_tasks.pop(old_key, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await self._redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{old_session_id}")
+        # Update mapping and start new poll task
+        self._chat_sessions[ws] = (token, new_session_id)
+        new_key = f"chat:{token}:{new_session_id}"
+        self._poll_tasks[new_key] = asyncio.create_task(
+            self._poll_chat_inbox(token, new_session_id, ws)
+        )
+        logger.info("Chat session updated: {} -> {} (token={}...)", old_session_id[:8], new_session_id[:8], token[:10])
 
     async def unregister_chat(self, token: str, ws: WebSocket) -> None:
         """Unregister a chat connection and clean up its inbox."""
@@ -197,7 +219,6 @@ class ConnectionBridge:
                     await task
                 except asyncio.CancelledError:
                     pass
-            await self._redis.srem(f"{_ACTIVE_CHATS_PREFIX}{token}", session_id)
             await self._redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
 
     # ── Queries (read from Redis for cluster-wide view) ───────────────────────
@@ -278,7 +299,7 @@ class ConnectionBridge:
             session_id, _ = await self.create_session(token)
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
-        self._pending_requests[request_id] = token
+        self._pending_requests[request_id] = (token, session_id)
 
         # Build prompt content
         content_items = []
@@ -316,19 +337,7 @@ class ConnectionBridge:
             },
         }
 
-        # Try local first
-        bot_ws = self._bots.get(token)
-        if bot_ws:
-            try:
-                await bot_ws.send_json(rpc_request)
-                logger.info("Sent to bot (local): req={} type={} (token={}...)", request_id, msg_type, token[:10])
-                return request_id
-            except Exception:
-                logger.exception("Failed to send to local bot (token={}...)", token[:10])
-                self._pending_requests.pop(request_id, None)
-                return None
-
-        # Bot on another worker — push to bot inbox
+        # Always route via inbox (works for both local and remote workers)
         try:
             inbox = f"{_BOT_INBOX_PREFIX}{token}"
             await self._redis.rpush(inbox, json.dumps({"rpc_request": rpc_request}))
@@ -357,79 +366,53 @@ class ConnectionBridge:
         if method:
             chat_event = _translate_bot_event(method, params)
             if chat_event:
-                await self._broadcast_to_chats(token, chat_event)
+                # Notifications carry sessionId in params; route to that session
+                session_id = params.get("sessionId") if params else None
+                if not session_id:
+                    session_id = await self.get_active_session(token)
+                if session_id:
+                    await self._send_to_session(token, session_id, chat_event)
 
         if "id" in msg and "result" in msg:
-            self._pending_requests.pop(msg["id"], None)
+            info = self._pending_requests.pop(msg["id"], None)
             done_event = _translate_bot_result(msg["result"])
             if done_event:
-                await self._broadcast_to_chats(token, done_event)
+                session_id = info[1] if info else await self.get_active_session(token)
+                if session_id:
+                    await self._send_to_session(token, session_id, done_event)
 
         if "id" in msg and "error" in msg:
-            self._pending_requests.pop(msg["id"], None)
+            info = self._pending_requests.pop(msg["id"], None)
             error_msg = msg["error"].get("message", "Unknown error from bot")
             logger.error("Bot JSON-RPC error: {} (token={}...)", error_msg, token[:10])
-            await self._broadcast_to_chats(token, {
-                "type": "error",
-                "content": error_msg,
-            })
+            error_event = {"type": "error", "content": error_msg}
+            session_id = info[1] if info else await self.get_active_session(token)
+            if session_id:
+                await self._send_to_session(token, session_id, error_event)
 
     # ── Bot status notifications ──────────────────────────────────────────────
 
     async def notify_bot_connected(self, token: str) -> None:
-        event = {"type": "bot_status", "connected": True}
-        await self._broadcast_to_chats(token, event)
+        session_id = await self.get_active_session(token)
+        if session_id:
+            await self._send_to_session(token, session_id, {"type": "bot_status", "connected": True})
 
     async def notify_bot_disconnected(self, token: str) -> None:
-        event = {"type": "bot_status", "connected": False}
-        await self._broadcast_to_chats(token, event)
+        session_id = await self.get_active_session(token)
+        if session_id:
+            await self._send_to_session(token, session_id, {"type": "bot_status", "connected": False})
 
     # ── Broadcasting ──────────────────────────────────────────────────────────
 
-    async def _broadcast_to_chats(self, token: str, event: dict) -> None:
-        """Broadcast to local chats AND push to remote chat inboxes."""
-        await self._broadcast_to_local_chats(token, event)
-        await self._broadcast_to_remote_chats(token, event)
-
-    async def _broadcast_to_local_chats(self, token: str, event: dict) -> None:
-        """Broadcast to chat WebSockets on this worker only."""
-        chat_set = self._chats.get(token)
-        if not chat_set:
-            return
-        payload = json.dumps(event)
-        closed: list[WebSocket] = []
-        for ws in chat_set:
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                closed.append(ws)
-        for ws in closed:
-            chat_set.discard(ws)
-        if closed:
-            logger.warning("Removed {} dead chat connections (token={}...)", len(closed), token[:10])
-
-    async def _broadcast_to_remote_chats(self, token: str, event: dict) -> None:
-        """Push event to remote chat inboxes (skip local ones)."""
+    async def _send_to_session(self, token: str, session_id: str, event: dict) -> None:
+        """Send event to a specific session's chat inbox via Redis."""
         try:
-            active_ids = await self._redis.smembers(f"{_ACTIVE_CHATS_PREFIX}{token}")
-            if not active_ids:
-                return
-            local_ids = {
-                self._chat_sessions[ws][1]
-                for ws in self._chats.get(token, set())
-                if ws in self._chat_sessions
-            }
-            payload = json.dumps(event)
-            for sid in active_ids:
-                sid_str = sid if isinstance(sid, str) else sid.decode()
-                if sid_str in local_ids:
-                    continue
-                inbox = f"{_CHAT_INBOX_PREFIX}{token}:{sid_str}"
-                await self._redis.rpush(inbox, payload)
-                await self._redis.expire(inbox, _INBOX_TTL)
+            inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+            await self._redis.rpush(inbox, json.dumps(event))
+            await self._redis.expire(inbox, _INBOX_TTL)
         except Exception:
             if not self._shutting_down:
-                logger.exception("Failed to broadcast to remote chats (token={}...)", token[:10])
+                logger.exception("Failed to send to session inbox (token={}... session={}...)", token[:10], session_id[:8])
 
     # ── Per-connection inbox polling ──────────────────────────────────────────
 
@@ -499,7 +482,6 @@ class ConnectionBridge:
                 await ws.close(code=4000, reason="Server restarting")
             except Exception:
                 pass
-            await self._redis.srem(f"{_ACTIVE_CHATS_PREFIX}{token}", session_id)
             await self._redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
         self._chats.clear()
         self._chat_sessions.clear()
