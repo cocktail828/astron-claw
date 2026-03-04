@@ -104,3 +104,63 @@ class Media(Base):
         Double, nullable=False,
         comment="过期时间，Unix 时间戳（秒），默认上传后 7 天",
     )
+
+
+class ChatSession(Base):
+    """聊天会话"""
+
+    __tablename__ = "chat_sessions"
+    __table_args__ = (
+        Index("idx_chat_sessions_token", "token"),
+        Index("uk_chat_sessions_session_id", "session_id", unique=True),
+        Index("idx_chat_sessions_created_at", "created_at"),
+        {"comment": "聊天会话表，记录每个 token 下的所有会话"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True,
+        comment="自增主键",
+    )
+    token: Mapped[str] = mapped_column(
+        String(64), nullable=False,
+        comment="关联 API 令牌",
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(36), nullable=False,
+        comment="UUID 会话标识",
+    )
+    session_number: Mapped[int] = mapped_column(
+        Integer, nullable=False,
+        comment="该 token 下的序号（从 1 开始）",
+    )
+    created_at: Mapped[float] = mapped_column(
+        Double, nullable=False,
+        comment="创建时间，Unix 时间戳（秒）",
+    )
+
+
+class ChatActiveSession(Base):
+    """活跃会话"""
+
+    __tablename__ = "chat_active_sessions"
+    __table_args__ = (
+        Index("uk_chat_active_sessions_token", "token", unique=True),
+        {"comment": "活跃会话表，记录每个 token 当前活跃的会话"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True,
+        comment="自增主键",
+    )
+    token: Mapped[str] = mapped_column(
+        String(64), nullable=False,
+        comment="关联 API 令牌",
+    )
+    active_session_id: Mapped[str] = mapped_column(
+        String(36), nullable=False,
+        comment="当前活跃会话 UUID",
+    )
+    updated_at: Mapped[float] = mapped_column(
+        Double, nullable=False,
+        comment="最后更新时间，Unix 时间戳（秒）",
+    )

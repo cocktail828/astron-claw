@@ -1,15 +1,16 @@
 import asyncio
 import json
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import WebSocket
 from redis.asyncio import Redis
 
 from infra.log import logger
 
-_SESSIONS_PREFIX = "bridge:sessions:"
-_ACTIVE_PREFIX = "bridge:active:"
+if TYPE_CHECKING:
+    from services.session_store import SessionStore
+
 _ONLINE_BOTS_KEY = "bridge:online_bots"
 _BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
 _CHAT_COUNTS_PREFIX = "bridge:chats:"          # per-worker HASH: token -> count
@@ -26,7 +27,8 @@ class ConnectionBridge:
 
     Each token can have one bot WebSocket and multiple chat WebSockets.
     Messages flow: chat -> server (JSON-RPC) -> bot -> server -> chat.
-    Session state is persisted in Redis; WebSocket refs stay in-memory.
+    Session data is persisted in MySQL via SessionStore, with Redis as a
+    write-through cache. WebSocket refs stay in-memory.
 
     Multi-worker safe: connection registry lives in Redis, cross-worker
     message routing uses Redis Pub/Sub.
@@ -36,7 +38,7 @@ class ConnectionBridge:
     are detected without requiring a startup cleanup — safe for rolling updates.
     """
 
-    def __init__(self, redis: Redis):
+    def __init__(self, redis: Redis, session_store: "SessionStore"):
         self._worker_id = uuid.uuid4().hex[:12]
         # token -> bot WebSocket (process-local)
         self._bots: dict[str, WebSocket] = {}
@@ -46,8 +48,10 @@ class ConnectionBridge:
         self._pending_requests: dict[str, str] = {}
         # media manager reference
         self._media_manager = None
-        # Redis client for session persistence + cross-worker state
+        # Redis client for cross-worker state
         self._redis = redis
+        # Session persistence layer (MySQL + Redis cache)
+        self._session_store = session_store
         # Background tasks
         self._pubsub_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
@@ -134,16 +138,15 @@ class ConnectionBridge:
             logger.info("Bot removed locally only (owner={}, self={}, token={}...)", owner, self._worker_id, token[:10])
 
     async def remove_bot_sessions(self, token: str) -> None:
-        """Destroy Redis session data for a token. Called only on admin token delete."""
-        await self._redis.delete(f"{_SESSIONS_PREFIX}{token}")
-        await self._redis.delete(f"{_ACTIVE_PREFIX}{token}")
+        """Destroy session data for a token. Called only on admin token delete."""
+        await self._session_store.remove_sessions(token)
         await self._redis.srem(_ONLINE_BOTS_KEY, token)
         await self._redis.hdel(_BOT_WORKERS_KEY, token)
         # Remove chat counts for this token from all workers
         worker_ids = await self._redis.smembers(_WORKERS_KEY)
         for wid in worker_ids:
             await self._redis.hdel(f"{_CHAT_COUNTS_PREFIX}{wid}", token)
-        logger.info("Bot sessions fully removed from Redis (token={}...)", token[:10])
+        logger.info("Bot sessions fully removed (token={}...)", token[:10])
 
     # ── Chat registration (multi-worker safe) ─────────────────────────────────
 
@@ -210,21 +213,18 @@ class ConnectionBridge:
             }
         return summary
 
-    # ── Session management ────────────────────────────────────────────────────
+    # ── Session management (delegated to SessionStore) ─────────────────────
 
     async def create_session(self, token: str) -> tuple[str, int]:
-        """Create a new session, append to Redis list, set as active."""
+        """Create a new session, persist to MySQL, cache in Redis."""
         session_id = str(uuid.uuid4())
-        key = f"{_SESSIONS_PREFIX}{token}"
-        await self._redis.rpush(key, session_id)
-        await self._redis.set(f"{_ACTIVE_PREFIX}{token}", session_id)
-        session_number = await self._redis.llen(key)
+        session_number = await self._session_store.create_session(token, session_id)
         logger.info("Session created: {} (token={}...)", session_id[:8], token[:10])
         return session_id, session_number
 
     async def get_active_session(self, token: str) -> Optional[str]:
         """Return the current active session ID, or None if no session exists."""
-        return await self._redis.get(f"{_ACTIVE_PREFIX}{token}")
+        return await self._session_store.get_active_session(token)
 
     async def reset_session(self, token: str) -> tuple[str, int]:
         """Reset the session for a token by creating a new one."""
@@ -232,19 +232,15 @@ class ConnectionBridge:
 
     async def switch_session(self, token: str, session_id: str) -> bool:
         """Switch the active session. Returns False if session_id not found."""
-        sessions = await self._redis.lrange(f"{_SESSIONS_PREFIX}{token}", 0, -1)
-        if session_id not in sessions:
-            logger.warning("Session switch failed: {} not found (token={}...)", session_id[:8], token[:10])
-            return False
-        await self._redis.set(f"{_ACTIVE_PREFIX}{token}", session_id)
-        return True
+        return await self._session_store.switch_session(token, session_id)
 
     async def get_sessions(self, token: str) -> tuple[list[tuple[str, int]], str]:
         """Return ([(id, number), ...], active_id) for the token."""
-        sessions = await self._redis.lrange(f"{_SESSIONS_PREFIX}{token}", 0, -1)
-        numbered = [(sid, i + 1) for i, sid in enumerate(sessions)]
-        active_id = await self._redis.get(f"{_ACTIVE_PREFIX}{token}") or ""
-        return numbered, active_id
+        return await self._session_store.get_sessions(token)
+
+    async def cleanup_old_sessions(self, max_age_days: float) -> int:
+        """Remove sessions older than max_age_days. Returns count removed."""
+        return await self._session_store.cleanup_old_sessions(max_age_days * 86400)
 
     # ── Message routing (cross-worker via Pub/Sub) ────────────────────────────
 
@@ -257,7 +253,7 @@ class ConnectionBridge:
     ) -> Optional[str]:
         """Create a JSON-RPC request and send it to the bot.
         If the bot is on another worker, route via Pub/Sub."""
-        session_id = await self._redis.get(f"{_ACTIVE_PREFIX}{token}")
+        session_id = await self.get_active_session(token)
         if not session_id:
             session_id, _ = await self.create_session(token)
 

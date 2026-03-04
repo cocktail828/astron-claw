@@ -55,6 +55,23 @@ def mock_redis():
     redis.rpush = AsyncMock(return_value=1)
     redis.lrange = AsyncMock(return_value=[])
     redis.llen = AsyncMock(return_value=0)
+    redis.ttl = AsyncMock(return_value=-2)
+    redis.expire = AsyncMock(return_value=True)
     redis.ping = AsyncMock(return_value=True)
     redis.publish = AsyncMock(return_value=1)
     return redis
+
+
+# ── Mock SessionStore ─────────────────────────────────────────────────────
+
+@pytest.fixture()
+def mock_session_store():
+    """Return an ``AsyncMock`` SessionStore with sensible defaults."""
+    store = AsyncMock()
+    store.create_session = AsyncMock(return_value=1)
+    store.get_active_session = AsyncMock(return_value=None)
+    store.get_sessions = AsyncMock(return_value=([], ""))
+    store.switch_session = AsyncMock(return_value=True)
+    store.remove_sessions = AsyncMock()
+    store.cleanup_old_sessions = AsyncMock(return_value=0)
+    return store
