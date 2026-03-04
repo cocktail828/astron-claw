@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -52,31 +52,30 @@ class TestRegisterChat:
         await bridge.register_chat("tok-1", ws, "session-abc")
         assert ws in bridge._chat_sessions
         assert bridge._chat_sessions[ws] == ("tok-1", "session-abc")
-        mock_redis.sadd.assert_awaited()
         assert "chat:tok-1:session-abc" in bridge._poll_tasks
 
 
 class TestSendToBot:
     async def test_send_to_bot_text(self, bridge, mock_redis, mock_session_store):
-        ws = AsyncMock()
-        mock_redis.sismember.return_value = False
-        await bridge.register_bot("tok-1", ws)
         mock_session_store.get_active_session.return_value = "session-id-1"
 
         req_id = await bridge.send_to_bot("tok-1", "hello", msg_type="text")
         assert req_id is not None
         assert req_id.startswith("req_")
+        # pending_requests stores (token, session_id)
+        assert bridge._pending_requests[req_id] == ("tok-1", "session-id-1")
 
-        sent = ws.send_json.call_args[0][0]
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key, payload_str = mock_redis.rpush.call_args[0]
+        assert inbox_key == "bridge:bot_inbox:tok-1"
+        data = json.loads(payload_str)
+        sent = data["rpc_request"]
         assert sent["method"] == "session/prompt"
         content_items = sent["params"]["prompt"]["content"]
         assert len(content_items) == 1
         assert content_items[0] == {"type": "text", "text": "hello"}
 
     async def test_send_to_bot_image(self, bridge, mock_redis, mock_session_store):
-        ws = AsyncMock()
-        mock_redis.sismember.return_value = False
-        await bridge.register_bot("tok-1", ws)
         mock_session_store.get_active_session.return_value = "session-id-1"
 
         media = {
@@ -89,7 +88,9 @@ class TestSendToBot:
         req_id = await bridge.send_to_bot("tok-1", "my photo", msg_type="image", media=media)
         assert req_id is not None
 
-        sent = ws.send_json.call_args[0][0]
+        inbox_key, payload_str = mock_redis.rpush.call_args[0]
+        data = json.loads(payload_str)
+        sent = data["rpc_request"]
         content_items = sent["params"]["prompt"]["content"]
         assert len(content_items) == 2
         assert content_items[0]["type"] == "text"
@@ -105,6 +106,76 @@ class TestHandleBotMessage:
     async def test_handle_bot_message_ping(self, bridge):
         # Ping messages should be silently ignored
         await bridge.handle_bot_message("tok-1", json.dumps({"type": "ping"}))
+
+    async def test_routes_chunk_to_session_from_params(self, bridge, mock_redis):
+        """Streaming notifications with sessionId in params are routed to that session's inbox."""
+        msg = {
+            "method": "session/update",
+            "params": {
+                "sessionId": "session-abc",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"text": "hello"},
+                },
+            },
+        }
+        await bridge.handle_bot_message("tok-1", json.dumps(msg))
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key = mock_redis.rpush.call_args[0][0]
+        assert inbox_key == "bridge:chat_inbox:tok-1:session-abc"
+        payload = json.loads(mock_redis.rpush.call_args[0][1])
+        assert payload["type"] == "chunk"
+        assert payload["content"] == "hello"
+
+    async def test_routes_result_to_pending_request_session(self, bridge, mock_redis):
+        """JSON-RPC result is routed to the session that made the request."""
+        bridge._pending_requests["req_123"] = ("tok-1", "session-xyz")
+
+        msg = {
+            "jsonrpc": "2.0",
+            "id": "req_123",
+            "result": {"stopReason": "end_turn"},
+        }
+        await bridge.handle_bot_message("tok-1", json.dumps(msg))
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key = mock_redis.rpush.call_args[0][0]
+        assert inbox_key == "bridge:chat_inbox:tok-1:session-xyz"
+        payload = json.loads(mock_redis.rpush.call_args[0][1])
+        assert payload["type"] == "done"
+        # Pending request should be cleaned up
+        assert "req_123" not in bridge._pending_requests
+
+    async def test_routes_error_to_pending_request_session(self, bridge, mock_redis):
+        """JSON-RPC error is routed to the session that made the request."""
+        bridge._pending_requests["req_456"] = ("tok-1", "session-xyz")
+
+        msg = {
+            "jsonrpc": "2.0",
+            "id": "req_456",
+            "error": {"code": -1, "message": "Bot failed"},
+        }
+        await bridge.handle_bot_message("tok-1", json.dumps(msg))
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key = mock_redis.rpush.call_args[0][0]
+        assert inbox_key == "bridge:chat_inbox:tok-1:session-xyz"
+        payload = json.loads(mock_redis.rpush.call_args[0][1])
+        assert payload["type"] == "error"
+        assert payload["content"] == "Bot failed"
+
+    async def test_remote_session_gets_inbox_push(self, bridge, mock_redis):
+        """When target session is not local, event is pushed to its inbox."""
+        # No local chat registered for session-remote
+        bridge._pending_requests["req_789"] = ("tok-1", "session-remote")
+
+        msg = {
+            "jsonrpc": "2.0",
+            "id": "req_789",
+            "result": {"stopReason": "end_turn"},
+        }
+        await bridge.handle_bot_message("tok-1", json.dumps(msg))
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key = mock_redis.rpush.call_args[0][0]
+        assert inbox_key == "bridge:chat_inbox:tok-1:session-remote"
 
 
 class TestGetConnectionsSummary:
@@ -187,25 +258,21 @@ class TestSendToBotRemote:
         mock_redis.expire.assert_awaited()
 
 
-class TestBroadcastToRemoteChats:
-    async def test_pushes_to_remote_sessions_only(self, bridge, mock_redis):
-        """Skips local sessions; pushes event to remote sessions' inboxes."""
-        chat_ws = AsyncMock()
-        await bridge.register_chat("tok-1", chat_ws, "session-local")
-        mock_redis.rpush.reset_mock()  # clear any calls from register_chat
+class TestBotStatusNotification:
+    async def test_notify_bot_connected_sends_to_active_session(self, bridge, mock_redis, mock_session_store):
+        """bot_status is sent to the current active session only."""
+        mock_session_store.get_active_session.return_value = "session-active"
+        await bridge.notify_bot_connected("tok-1")
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key = mock_redis.rpush.call_args[0][0]
+        assert inbox_key == "bridge:chat_inbox:tok-1:session-active"
+        payload = json.loads(mock_redis.rpush.call_args[0][1])
+        assert payload == {"type": "bot_status", "connected": True}
 
-        mock_redis.smembers.return_value = {"session-local", "session-remote"}
-
-        await bridge._broadcast_to_remote_chats("tok-1", {"type": "chunk", "content": "hi"})
-
-        pushed_keys = [call[0][0] for call in mock_redis.rpush.call_args_list]
-        assert "bridge:chat_inbox:tok-1:session-remote" in pushed_keys
-        assert "bridge:chat_inbox:tok-1:session-local" not in pushed_keys
-
-    async def test_no_push_when_no_active_chats(self, bridge, mock_redis):
-        """No RPUSH when active_chats SET is empty."""
-        mock_redis.smembers.return_value = set()
-        await bridge._broadcast_to_remote_chats("tok-1", {"type": "chunk"})
+    async def test_notify_bot_disconnected_no_active_session(self, bridge, mock_redis, mock_session_store):
+        """No push when there is no active session."""
+        mock_session_store.get_active_session.return_value = None
+        await bridge.notify_bot_disconnected("tok-1")
         mock_redis.rpush.assert_not_awaited()
 
 
@@ -256,16 +323,42 @@ class TestPollChatInbox:
         chat_ws.send_text.assert_not_awaited()
 
 
+class TestUpdateChatSession:
+    async def test_restarts_poll_task_on_session_change(self, bridge, mock_redis):
+        """Switching session stops old poll task, starts new one, cleans old inbox."""
+        chat_ws = AsyncMock()
+        await bridge.register_chat("tok-1", chat_ws, "session-old")
+        assert "chat:tok-1:session-old" in bridge._poll_tasks
+
+        mock_redis.reset_mock()
+        await bridge.update_chat_session(chat_ws, "session-new")
+
+        # Old poll task stopped, old inbox deleted
+        assert "chat:tok-1:session-old" not in bridge._poll_tasks
+        mock_redis.delete.assert_awaited_once_with("bridge:chat_inbox:tok-1:session-old")
+        # New poll task started
+        assert "chat:tok-1:session-new" in bridge._poll_tasks
+        assert bridge._chat_sessions[chat_ws] == ("tok-1", "session-new")
+
+    async def test_noop_when_same_session(self, bridge, mock_redis):
+        """No change when session_id is the same."""
+        chat_ws = AsyncMock()
+        await bridge.register_chat("tok-1", chat_ws, "session-abc")
+        mock_redis.reset_mock()
+
+        await bridge.update_chat_session(chat_ws, "session-abc")
+        mock_redis.delete.assert_not_awaited()
+
+
 class TestUnregisterChat:
-    async def test_cleans_up_inbox_and_active_chats(self, bridge, mock_redis):
-        """Unregistering a chat removes its session from active_chats and deletes inbox."""
+    async def test_cleans_up_inbox(self, bridge, mock_redis):
+        """Unregistering a chat deletes its inbox and cancels poll task."""
         chat_ws = AsyncMock()
         await bridge.register_chat("tok-1", chat_ws, "session-abc")
         mock_redis.reset_mock()
 
         await bridge.unregister_chat("tok-1", chat_ws)
 
-        mock_redis.srem.assert_awaited_once_with("bridge:active_chats:tok-1", "session-abc")
         mock_redis.delete.assert_awaited_once_with("bridge:chat_inbox:tok-1:session-abc")
         assert chat_ws not in bridge._chat_sessions
         assert "chat:tok-1:session-abc" not in bridge._poll_tasks

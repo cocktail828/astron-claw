@@ -89,6 +89,7 @@ async def ws_chat(
 
             if msg_type == "new_session":
                 new_id, new_num = await state.bridge.create_session(token)
+                await state.bridge.update_chat_session(ws, new_id)
                 sessions, active_id = await state.bridge.get_sessions(token)
                 await ws.send_json({
                     "type": "new_session_ack",
@@ -102,6 +103,7 @@ async def ws_chat(
             if msg_type == "switch_session":
                 target_id = data.get("sessionId", "")
                 if await state.bridge.switch_session(token, target_id):
+                    await state.bridge.update_chat_session(ws, target_id)
                     sessions, active_id = await state.bridge.get_sessions(token)
                     await ws.send_json({
                         "type": "switch_session_ack",
