@@ -10,7 +10,11 @@ from services.bridge import ConnectionBridge
 
 @pytest.fixture()
 def bridge(mock_redis, mock_session_store):
-    return ConnectionBridge(mock_redis, session_store=mock_session_store)
+    b = ConnectionBridge(mock_redis, session_store=mock_session_store)
+    yield b
+    # Cancel any poll tasks created during tests
+    for task in b._poll_tasks.values():
+        task.cancel()
 
 
 class TestRegisterBot:
@@ -21,6 +25,8 @@ class TestRegisterBot:
         assert result is True
         assert "tok-1" in bridge._bots
         mock_redis.sadd.assert_awaited()
+        # Poll task should be created
+        assert "bot:tok-1" in bridge._poll_tasks
 
     async def test_register_bot_local_dup(self, bridge, mock_redis):
         ws1, ws2 = AsyncMock(), AsyncMock()
@@ -37,6 +43,16 @@ class TestRegisterBot:
         mock_redis.exists.return_value = 1  # owning worker is alive
         result = await bridge.register_bot("tok-remote", ws)
         assert result is False
+
+
+class TestRegisterChat:
+    async def test_register_chat(self, bridge, mock_redis):
+        ws = AsyncMock()
+        await bridge.register_chat("tok-1", ws, "session-abc")
+        assert ws in bridge._chat_sessions
+        assert bridge._chat_sessions[ws] == ("tok-1", "session-abc")
+        mock_redis.sadd.assert_awaited()
+        assert "chat:tok-1:session-abc" in bridge._poll_tasks
 
 
 class TestSendToBot:
