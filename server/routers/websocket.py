@@ -53,7 +53,6 @@ async def ws_chat(
         return
 
     await ws.accept()
-    await state.bridge.register_chat(token, ws)
     logger.info("Chat client connected: {}...", token[:10])
 
     await ws.send_json({
@@ -71,6 +70,10 @@ async def ws_chat(
     else:
         session_id, session_number = await state.bridge.create_session(token)
         sessions, active_id = await state.bridge.get_sessions(token)
+
+    # Register after session_id is known so inbox key uses the session_id
+    await state.bridge.register_chat(token, ws, session_id)
+
     await ws.send_json({
         "type": "session_info",
         "sessionId": session_id,
