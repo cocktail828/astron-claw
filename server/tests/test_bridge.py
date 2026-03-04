@@ -1,5 +1,6 @@
 """Tests for services/bridge.py — ConnectionBridge methods (mock Redis)."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -164,3 +165,107 @@ class TestSessionCreateSwitch:
         result = await bridge.cleanup_old_sessions(max_age_days=30)
         assert result == 5
         mock_session_store.cleanup_old_sessions.assert_awaited_once_with(30 * 86400)
+
+
+# ── Cross-worker inbox tests ─────────────────────────────────────────────────
+
+class TestSendToBotRemote:
+    async def test_writes_to_bot_inbox_when_no_local_bot(self, bridge, mock_redis, mock_session_store):
+        """When bot is not on this worker, message is pushed to bot_inbox:{token}."""
+        mock_session_store.get_active_session.return_value = "session-1"
+        # No bot registered locally → remote path
+        req_id = await bridge.send_to_bot("tok-1", "hello")
+        assert req_id is not None
+
+        mock_redis.rpush.assert_awaited_once()
+        inbox_key, payload_str = mock_redis.rpush.call_args[0]
+        assert inbox_key == "bridge:bot_inbox:tok-1"
+        data = json.loads(payload_str)
+        assert data["rpc_request"]["method"] == "session/prompt"
+        assert data["rpc_request"]["params"]["prompt"]["content"][0]["text"] == "hello"
+        # TTL should be set on the inbox key
+        mock_redis.expire.assert_awaited()
+
+
+class TestBroadcastToRemoteChats:
+    async def test_pushes_to_remote_sessions_only(self, bridge, mock_redis):
+        """Skips local sessions; pushes event to remote sessions' inboxes."""
+        chat_ws = AsyncMock()
+        await bridge.register_chat("tok-1", chat_ws, "session-local")
+        mock_redis.rpush.reset_mock()  # clear any calls from register_chat
+
+        mock_redis.smembers.return_value = {"session-local", "session-remote"}
+
+        await bridge._broadcast_to_remote_chats("tok-1", {"type": "chunk", "content": "hi"})
+
+        pushed_keys = [call[0][0] for call in mock_redis.rpush.call_args_list]
+        assert "bridge:chat_inbox:tok-1:session-remote" in pushed_keys
+        assert "bridge:chat_inbox:tok-1:session-local" not in pushed_keys
+
+    async def test_no_push_when_no_active_chats(self, bridge, mock_redis):
+        """No RPUSH when active_chats SET is empty."""
+        mock_redis.smembers.return_value = set()
+        await bridge._broadcast_to_remote_chats("tok-1", {"type": "chunk"})
+        mock_redis.rpush.assert_not_awaited()
+
+
+class TestPollBotInbox:
+    async def test_forwards_rpc_request_to_bot_ws(self, bridge, mock_redis):
+        """_poll_bot_inbox reads one message and forwards rpc_request to bot WS."""
+        bot_ws = AsyncMock()
+        bridge._bots["tok-1"] = bot_ws  # inject directly, skip register_bot
+
+        rpc_req = {"jsonrpc": "2.0", "id": "req_1", "method": "session/prompt", "params": {}}
+        payload = json.dumps({"rpc_request": rpc_req})
+        mock_redis.lpop.side_effect = [payload, asyncio.CancelledError()]
+
+        await bridge._poll_bot_inbox("tok-1")
+
+        bot_ws.send_json.assert_awaited_once_with(rpc_req)
+
+    async def test_skips_when_inbox_empty(self, bridge, mock_redis):
+        """When inbox is empty, lpop returns None and loop sleeps."""
+        bridge._bots["tok-1"] = AsyncMock()
+        mock_redis.lpop.side_effect = [None, asyncio.CancelledError()]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await bridge._poll_bot_inbox("tok-1")
+
+        bridge._bots["tok-1"].send_json.assert_not_awaited()
+
+
+class TestPollChatInbox:
+    async def test_forwards_event_to_chat_ws(self, bridge, mock_redis):
+        """_poll_chat_inbox reads one message and sends it to chat WS."""
+        chat_ws = AsyncMock()
+        payload = json.dumps({"type": "chunk", "content": "hello"})
+        mock_redis.lpop.side_effect = [payload, asyncio.CancelledError()]
+
+        await bridge._poll_chat_inbox("tok-1", "session-1", chat_ws)
+
+        chat_ws.send_text.assert_awaited_once_with(payload)
+
+    async def test_skips_when_inbox_empty(self, bridge, mock_redis):
+        """When inbox is empty, lpop returns None and loop sleeps."""
+        chat_ws = AsyncMock()
+        mock_redis.lpop.side_effect = [None, asyncio.CancelledError()]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await bridge._poll_chat_inbox("tok-1", "session-1", chat_ws)
+
+        chat_ws.send_text.assert_not_awaited()
+
+
+class TestUnregisterChat:
+    async def test_cleans_up_inbox_and_active_chats(self, bridge, mock_redis):
+        """Unregistering a chat removes its session from active_chats and deletes inbox."""
+        chat_ws = AsyncMock()
+        await bridge.register_chat("tok-1", chat_ws, "session-abc")
+        mock_redis.reset_mock()
+
+        await bridge.unregister_chat("tok-1", chat_ws)
+
+        mock_redis.srem.assert_awaited_once_with("bridge:active_chats:tok-1", "session-abc")
+        mock_redis.delete.assert_awaited_once_with("bridge:chat_inbox:tok-1:session-abc")
+        assert chat_ws not in bridge._chat_sessions
+        assert "chat:tok-1:session-abc" not in bridge._poll_tasks
