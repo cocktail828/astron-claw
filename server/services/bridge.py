@@ -15,11 +15,13 @@ _ONLINE_BOTS_KEY = "bridge:online_bots"
 _BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
 _CHAT_COUNTS_PREFIX = "bridge:chats:"          # per-worker HASH: token -> count
 _WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
-_PUBSUB_CHANNEL = "bridge:pubsub"
+_STREAM_KEY = "bridge:stream"                  # Redis Stream for cross-worker messaging
 _WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
 
 _WORKER_TTL = 30        # heartbeat TTL (seconds)
 _HEARTBEAT_INTERVAL = 10  # how often each worker refreshes its heartbeat
+_STREAM_MAXLEN = 100      # cap stream length to bound memory usage
+_STREAM_BLOCK_MS = 1000   # XREAD block timeout (ms)
 
 
 class ConnectionBridge:
@@ -31,7 +33,8 @@ class ConnectionBridge:
     write-through cache. WebSocket refs stay in-memory.
 
     Multi-worker safe: connection registry lives in Redis, cross-worker
-    message routing uses Redis Pub/Sub.
+    message routing uses a Redis Stream (compatible with both standalone
+    and cluster modes).
 
     Worker liveness is tracked via per-worker heartbeat keys with a TTL.
     This ensures stale bot registrations from crashed or restarted workers
@@ -58,9 +61,9 @@ class ConnectionBridge:
         self._shutting_down = False
 
     async def start(self) -> None:
-        """Start the Pub/Sub listener and worker heartbeat."""
+        """Start the stream listener and worker heartbeat."""
         await self._redis.sadd(_WORKERS_KEY, self._worker_id)
-        self._pubsub_task = asyncio.create_task(self._listen_pubsub())
+        self._pubsub_task = asyncio.create_task(self._listen_stream())
         self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
         logger.info("Bridge worker {} started", self._worker_id)
 
@@ -83,6 +86,8 @@ class ConnectionBridge:
                 chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
                 if await self._redis.exists(chat_key):
                     await self._redis.expire(chat_key, _WORKER_TTL)
+                # Keep stream key alive; auto-expires when all workers are down
+                await self._redis.expire(_STREAM_KEY, _WORKER_TTL)
             except Exception:
                 if not self._shutting_down:
                     logger.exception("Heartbeat refresh failed (worker={})", self._worker_id)
@@ -242,7 +247,7 @@ class ConnectionBridge:
         """Remove sessions older than max_age_days. Returns count removed."""
         return await self._session_store.cleanup_old_sessions(max_age_days * 86400)
 
-    # ── Message routing (cross-worker via Pub/Sub) ────────────────────────────
+    # ── Message routing (cross-worker via Stream) ──────────────────────────────
 
     async def send_to_bot(
         self,
@@ -308,13 +313,13 @@ class ConnectionBridge:
                 self._pending_requests.pop(request_id, None)
                 return None
 
-        # Bot on another worker — route via Pub/Sub
+        # Bot on another worker — route via Stream
         await self._publish({
             "action": "to_bot",
             "token": token,
             "rpc_request": rpc_request,
         })
-        logger.info("Sent to bot (pub/sub): req={} type={} (token={}...)", request_id, msg_type, token[:10])
+        logger.info("Sent to bot (stream): req={} type={} (token={}...)", request_id, msg_type, token[:10])
         return request_id
 
     async def handle_bot_message(self, token: str, raw: str) -> None:
@@ -367,7 +372,7 @@ class ConnectionBridge:
     # ── Broadcasting ──────────────────────────────────────────────────────────
 
     async def _broadcast_to_chats(self, token: str, event: dict) -> None:
-        """Broadcast to local chats AND publish to Pub/Sub for other workers."""
+        """Broadcast to local chats AND publish to Stream for other workers."""
         await self._broadcast_to_local_chats(token, event)
         await self._publish({"action": "to_chats", "token": token, "event": event})
 
@@ -388,46 +393,52 @@ class ConnectionBridge:
         if closed:
             logger.warning("Removed {} dead chat connections (token={}...)", len(closed), token[:10])
 
-    # ── Pub/Sub ───────────────────────────────────────────────────────────────
+    # ── Redis Stream (replaces Pub/Sub — works with both standalone & cluster) ─
 
     async def _publish(self, message: dict) -> None:
-        """Publish a message to the Pub/Sub channel with origin worker ID."""
+        """Append a message to the Redis Stream with origin worker ID."""
         message["_origin"] = self._worker_id
         try:
-            await self._redis.publish(_PUBSUB_CHANNEL, json.dumps(message))
+            await self._redis.xadd(
+                _STREAM_KEY,
+                {"data": json.dumps(message)},
+                maxlen=_STREAM_MAXLEN,
+                approximate=True,
+            )
         except Exception:
             if not self._shutting_down:
-                logger.exception("Failed to publish to Pub/Sub")
+                logger.exception("Failed to write to stream")
 
-    async def _listen_pubsub(self) -> None:
-        """Subscribe to the Pub/Sub channel and handle messages from other workers."""
+    async def _listen_stream(self) -> None:
+        """Poll the Redis Stream and handle messages from other workers."""
+        # Start reading only new messages (from now on)
+        last_id = "$"
         while not self._shutting_down:
             try:
-                pubsub = self._redis.pubsub()
-                await pubsub.subscribe(_PUBSUB_CHANNEL)
-                logger.info("Worker {} subscribed to {}", self._worker_id, _PUBSUB_CHANNEL)
-                async for message in pubsub.listen():
-                    if self._shutting_down:
-                        break
-                    if message["type"] != "message":
-                        continue
-                    try:
-                        data = json.loads(message["data"])
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    # Skip messages from this worker
-                    if data.get("_origin") == self._worker_id:
-                        continue
-                    await self._handle_pubsub(data)
+                entries = await self._redis.xread(
+                    {_STREAM_KEY: last_id}, count=50, block=_STREAM_BLOCK_MS,
+                )
+                if not entries:
+                    continue
+                for _stream_name, messages in entries:
+                    for msg_id, fields in messages:
+                        last_id = msg_id
+                        try:
+                            data = json.loads(fields.get("data", "{}"))
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if data.get("_origin") == self._worker_id:
+                            continue
+                        await self._handle_stream_message(data)
             except asyncio.CancelledError:
                 break
             except Exception:
                 if not self._shutting_down:
-                    logger.exception("Pub/Sub listener error, reconnecting in 1s...")
+                    logger.exception("Stream listener error, retrying in 1s...")
                     await asyncio.sleep(1)
 
-    async def _handle_pubsub(self, data: dict) -> None:
-        """Handle an incoming Pub/Sub message from another worker."""
+    async def _handle_stream_message(self, data: dict) -> None:
+        """Handle an incoming message from the stream (from another worker)."""
         action = data.get("action")
         token = data.get("token", "")
 
@@ -437,9 +448,9 @@ class ConnectionBridge:
             if bot_ws:
                 try:
                     await bot_ws.send_json(data["rpc_request"])
-                    logger.info("Pub/Sub: forwarded to local bot (token={}...)", token[:10])
+                    logger.info("Stream: forwarded to local bot (token={}...)", token[:10])
                 except Exception:
-                    logger.exception("Pub/Sub: failed to forward to local bot (token={}...)", token[:10])
+                    logger.exception("Stream: failed to forward to local bot (token={}...)", token[:10])
 
         elif action == "to_chats":
             # Another worker is broadcasting to chats — send to our local ones
