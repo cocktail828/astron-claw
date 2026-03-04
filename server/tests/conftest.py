@@ -58,7 +58,8 @@ def mock_redis():
     redis.ttl = AsyncMock(return_value=-2)
     redis.expire = AsyncMock(return_value=True)
     redis.ping = AsyncMock(return_value=True)
-    redis.publish = AsyncMock(return_value=1)
+    redis.xadd = AsyncMock(return_value="1-0")
+    redis.xread = AsyncMock(return_value=[])
     return redis
 
 
