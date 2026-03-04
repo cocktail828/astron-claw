@@ -71,7 +71,7 @@ def load_config() -> AppConfig:
         server=ServerConfig(
             host=os.getenv("SERVER_HOST", "0.0.0.0"),
             port=int(os.getenv("SERVER_PORT", "8765")),
-            workers=int(os.getenv("SERVER_WORKERS", "1")),
+            workers=int(os.getenv("SERVER_WORKERS", str((os.cpu_count() or 1) + 1))),
             log_level=os.getenv("SERVER_LOG_LEVEL", "info"),
             access_log=os.getenv("SERVER_ACCESS_LOG", "true").lower() == "true",
         ),
