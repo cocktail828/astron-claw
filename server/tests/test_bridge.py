@@ -9,8 +9,8 @@ from services.bridge import ConnectionBridge
 
 
 @pytest.fixture()
-def bridge(mock_redis):
-    return ConnectionBridge(mock_redis)
+def bridge(mock_redis, mock_session_store):
+    return ConnectionBridge(mock_redis, session_store=mock_session_store)
 
 
 class TestRegisterBot:
@@ -40,11 +40,11 @@ class TestRegisterBot:
 
 
 class TestSendToBot:
-    async def test_send_to_bot_text(self, bridge, mock_redis):
+    async def test_send_to_bot_text(self, bridge, mock_redis, mock_session_store):
         ws = AsyncMock()
         mock_redis.sismember.return_value = False
         await bridge.register_bot("tok-1", ws)
-        mock_redis.get.return_value = "session-id-1"
+        mock_session_store.get_active_session.return_value = "session-id-1"
 
         req_id = await bridge.send_to_bot("tok-1", "hello", msg_type="text")
         assert req_id is not None
@@ -56,11 +56,11 @@ class TestSendToBot:
         assert len(content_items) == 1
         assert content_items[0] == {"type": "text", "text": "hello"}
 
-    async def test_send_to_bot_image(self, bridge, mock_redis):
+    async def test_send_to_bot_image(self, bridge, mock_redis, mock_session_store):
         ws = AsyncMock()
         mock_redis.sismember.return_value = False
         await bridge.register_bot("tok-1", ws)
-        mock_redis.get.return_value = "session-id-1"
+        mock_session_store.get_active_session.return_value = "session-id-1"
 
         media = {
             "mediaId": "media_abc",
@@ -112,26 +112,39 @@ class TestGetConnectionsSummary:
 
 
 class TestSessionCreateSwitch:
-    async def test_session_create_switch(self, bridge, mock_redis):
-        # create_session
-        mock_redis.llen.return_value = 1
+    async def test_create_session(self, bridge, mock_session_store):
+        mock_session_store.create_session.return_value = 1
         session_id, number = await bridge.create_session("tok-1")
         assert number == 1
         assert session_id  # non-empty UUID string
+        mock_session_store.create_session.assert_awaited_once_with("tok-1", session_id)
 
-        # switch_session with the session in Redis list
-        mock_redis.lrange.return_value = [session_id]
-        assert await bridge.switch_session("tok-1", session_id) is True
+    async def test_switch_session_success(self, bridge, mock_session_store):
+        mock_session_store.switch_session.return_value = True
+        assert await bridge.switch_session("tok-1", "some-session") is True
+        mock_session_store.switch_session.assert_awaited_once_with("tok-1", "some-session")
 
-        # switch_session with unknown session
-        mock_redis.lrange.return_value = [session_id]
+    async def test_switch_session_failure(self, bridge, mock_session_store):
+        mock_session_store.switch_session.return_value = False
         assert await bridge.switch_session("tok-1", "nonexistent") is False
 
-        # get_sessions
-        mock_redis.lrange.return_value = [session_id]
-        mock_redis.get.return_value = session_id
+    async def test_get_sessions(self, bridge, mock_session_store):
+        mock_session_store.get_sessions.return_value = (
+            [("sid-1", 1), ("sid-2", 2)], "sid-2"
+        )
         sessions, active = await bridge.get_sessions("tok-1")
-        assert len(sessions) == 1
-        assert sessions[0][0] == session_id
-        assert sessions[0][1] == 1
-        assert active == session_id
+        assert len(sessions) == 2
+        assert sessions[0] == ("sid-1", 1)
+        assert active == "sid-2"
+        mock_session_store.get_sessions.assert_awaited_once_with("tok-1")
+
+    async def test_get_active_session(self, bridge, mock_session_store):
+        mock_session_store.get_active_session.return_value = "sid-1"
+        result = await bridge.get_active_session("tok-1")
+        assert result == "sid-1"
+
+    async def test_cleanup_old_sessions(self, bridge, mock_session_store):
+        mock_session_store.cleanup_old_sessions.return_value = 5
+        result = await bridge.cleanup_old_sessions(max_age_days=30)
+        assert result == 5
+        mock_session_store.cleanup_old_sessions.assert_awaited_once_with(30 * 86400)
