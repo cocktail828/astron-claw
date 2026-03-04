@@ -1,0 +1,48 @@
+[project]
+name = "astron-claw"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
+    "python-multipart",
+    "sqlalchemy[asyncio]",
+    "aiomysql",
+    "redis[hiredis]",
+    "python-dotenv",
+    "alembic",
+    "loguru",
+    "uvloop",
+    "httptools",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+[project]
+name = "astron-claw"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
+    "python-multipart",
+    "sqlalchemy[asyncio]",
+    "aiomysql",
+    "redis[hiredis]",
+    "python-dotenv",
+    "alembic",
+    "loguru",
+    "uvloop",
+    "httptools",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
