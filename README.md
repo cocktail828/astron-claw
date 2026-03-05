@@ -1,10 +1,25 @@
 # Astron Claw
 
+[![Release](https://img.shields.io/github/v/release/hygao1024/astron-claw)](https://github.com/hygao1024/astron-claw/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
+
 AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端和 Chat 端分别通过 WebSocket 连接，根据 Token 配对并双向转发消息，支持流式回复。作为 OpenClaw Channel Plugin 运行，实现完整的消息和媒体双向传输。
 
 ```
-Chat Client ──WebSocket──▶ Bridge Server ◀──WebSocket── Bot Plugin (OpenClaw)
-              /bridge/chat    (Token 配对)     /bridge/bot
+                         ┌──────────────────────┐
+Chat Client ──WebSocket──▶   Bridge Server      ◀──WebSocket── Bot Plugin (OpenClaw)
+             /bridge/chat │  (FastAPI + Redis)   │  /bridge/bot
+                          │                      │
+                          │  Token 配对 & 路由    │
+                          │  Session 管理         │
+                          │  媒体中转             │
+                          └──────────────────────┘
+                                   │
+                          ┌────────┴────────┐
+                          │  MySQL   Redis   │
+                          │  持久化   缓存/路由│
+                          └─────────────────┘
 ```
 
 ## 特性
@@ -15,13 +30,15 @@ Chat Client ──WebSocket──▶ Bridge Server ◀──WebSocket── Bot 
 - **媒体消息支持** — 图片、音频、视频、文件的上传/下载和双向传输
 - **Token 管理** — 支持自定义名称、多种过期时间（1h/6h/1d/7d/30d/永不过期）
 - **流式传输** — Token 级别真流式输出（onPartialReply 模式），支持思考过程、文本片段、工具调用/结果等多种消息类型
-- **多 Worker 高可用** — Redis Pub/Sub 跨 Worker 消息路由，连接状态全局可见，支持多进程 Uvicorn 部署
+- **多 Worker 高可用** — Redis per-token/session inbox 跨 Worker 消息路由，连接状态全局可见，支持多进程 Uvicorn 部署
 - **优雅关闭 & 自动重连** — 服务端滚动更新时通知客户端，Chat/Bot 自动重连并恢复会话，无需手动刷新
 - **Admin 管理面板** — 密码认证、Token CRUD、在线状态监控
 - **Web 聊天界面** — 内置 Chat 前端，支持文本和附件发送、会话切换
 - **JSON-RPC 2.0 协议** — Bot 端和服务端之间使用标准 JSON-RPC 通信
-- **高可用存储** — MySQL (SQLAlchemy ORM) 持久化 + Redis 会话缓存 + Redis Pub/Sub 跨 Worker 通信，支持 Redis 单机/集群双模式
+- **高可用存储** — MySQL (SQLAlchemy ORM) 持久化 + Redis 会话缓存 + Redis inbox 跨 Worker 路由，支持 Redis 单机/集群双模式
+- **链路追踪日志** — 全生命周期结构化日志，每条携带 token/session_id，支持 `grep` 端到端追踪
 - **数据库版本控制** — Alembic 管理 Schema 迁移，支持升级/回滚
+- **Docker 部署** — 多阶段构建镜像，启动时自动迁移数据库
 
 ## 项目结构
 
@@ -42,7 +59,8 @@ astron-claw/
 │   │   ├── models.py       # SQLAlchemy ORM 模型
 │   │   └── log.py          # Loguru 日志配置
 │   ├── services/           # 业务逻辑层
-│   │   ├── bridge.py       # 连接桥接逻辑 (session 状态存储于 Redis)
+│   │   ├── bridge.py       # 连接桥接逻辑 (跨 Worker inbox 路由)
+│   │   ├── session_store.py  # 会话持久化 (MySQL + Redis write-through)
 │   │   ├── token_manager.py  # Token 管理 (MySQL)
 │   │   ├── admin_auth.py   # Admin 认证 (MySQL + Redis session)
 │   │   ├── media_manager.py  # 媒体文件管理（MySQL + 本地文件系统）
@@ -63,6 +81,7 @@ astron-claw/
 │       ├── test_token_manager.py
 │       ├── test_media_manager.py
 │       ├── test_admin_auth.py
+│       ├── test_session_store.py
 │       ├── test_bridge.py
 │       └── e2e/            # 黑盒集成测试（需要真实服务器）
 │           ├── README.md
@@ -151,7 +170,7 @@ uv run python3 run.py
 在 Bot 所在的机器上一行命令安装（从 GitHub Release 自动下载）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/install.sh | bash -s -- \
+curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/main/install.sh | bash -s -- \
   --bot-token <token> --server-url ws://<server-ip>:8765/bridge/bot
 ```
 
@@ -172,12 +191,30 @@ curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/instal
 
 ```bash
 # 远程执行
-curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/uninstall.sh | bash -s -- -y
+curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/main/uninstall.sh | bash -s -- -y
 
 # 或本地执行
 ./uninstall.sh       # 交互式确认
 ./uninstall.sh -y    # 静默卸载
 ```
+
+## Docker 部署
+
+```bash
+# 构建镜像
+docker build -t astron-claw .
+
+# 运行（需提供 MySQL 和 Redis 连接信息）
+docker run -d \
+  --name astron-claw \
+  -p 8765:8765 \
+  -e MYSQL_HOST=<mysql-ip> \
+  -e MYSQL_PASSWORD=<password> \
+  -e REDIS_HOST=<redis-ip> \
+  astron-claw
+```
+
+容器启动时自动执行 `alembic upgrade head` 迁移数据库，内置健康检查（`/api/health`，30s 间隔）。
 
 ## 数据库迁移
 
@@ -240,11 +277,13 @@ python3 server/tests/e2e/test_integration.py
 
 ## 技术栈
 
-- **服务端**：Python 3 / FastAPI / Uvicorn
+- **服务端**：Python 3.11+ / FastAPI / Uvicorn (uvloop + httptools)
 - **数据库**：MySQL (SQLAlchemy ORM + Alembic) / Redis (单机 + 集群)
-- **前端**：原生 HTML / CSS / JavaScript
+- **日志**：Loguru 结构化日志 + 链路追踪
+- **前端**：原生 HTML / CSS / JavaScript（highlight.js 代码高亮）
 - **插件**：Node.js / WebSocket (ws) / OpenClaw ChannelPlugin SDK
 - **协议**：WebSocket + JSON-RPC 2.0
+- **部署**：Docker 多阶段构建 / uv 包管理
 
 ## License
 
