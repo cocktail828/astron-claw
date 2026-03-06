@@ -92,9 +92,27 @@ astron-claw/
 │   ├── index.html          # Chat 聊天界面（支持文本+附件）
 │   ├── admin.html          # Admin 管理面板
 │   └── astron_logo.png
-├── plugin/                 # OpenClaw Channel Plugin (Node.js)
-│   ├── dist/index.js       # ChannelPlugin 实现
+├── plugin/                 # OpenClaw Channel Plugin (TypeScript)
+│   ├── index.ts            # 入口（register + export default）
+│   ├── src/
+│   │   ├── constants.ts    # 插件常量
+│   │   ├── types.ts        # 共享类型定义
+│   │   ├── runtime.ts      # 全局状态管理
+│   │   ├── config.ts       # 账号配置解析
+│   │   ├── channel.ts      # ChannelPlugin 对象定义
+│   │   ├── onboarding.ts   # 交互式配置流程
+│   │   ├── hooks.ts        # tool_call/tool_result 钩子
+│   │   ├── bridge/
+│   │   │   ├── client.ts   # WebSocket 传输层（BridgeClient）
+│   │   │   ├── media.ts    # 媒体上传/下载 REST API
+│   │   │   └── monitor.ts  # 连接生命周期 & 健康探测
+│   │   └── messaging/
+│   │       ├── handlers.ts # 消息类型策略（text/image/audio/video/file）
+│   │       ├── inbound.ts  # 入站消息处理 & JSON-RPC dispatch
+│   │       ├── outbound.ts # 出站消息发送
+│   │       └── target.ts   # 地址归一化
 │   ├── openclaw.plugin.json
+│   ├── tsconfig.json
 │   └── package.json
 ├── docs/
 │   └── api.md              # API 参考文档
@@ -281,7 +299,7 @@ python3 server/tests/e2e/test_integration.py
 - **数据库**：MySQL (SQLAlchemy ORM + Alembic) / Redis (单机 + 集群)
 - **日志**：Loguru 结构化日志 + 链路追踪
 - **前端**：原生 HTML / CSS / JavaScript（highlight.js 代码高亮）
-- **插件**：Node.js / WebSocket (ws) / OpenClaw ChannelPlugin SDK
+- **插件**：TypeScript / WebSocket (ws) / OpenClaw ChannelPlugin SDK
 - **协议**：WebSocket + JSON-RPC 2.0
 - **部署**：Docker 多阶段构建 / uv 包管理
 

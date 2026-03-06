@@ -7,9 +7,10 @@ set -euo pipefail
 # Output: astron-claw-plugin.tar.gz (in repo root)
 # Contents:
 #   plugin/
-#     dist/
-#     node_modules/
+#     index.ts
+#     src/
 #     package.json
+#     tsconfig.json
 #     openclaw.plugin.json
 # ---------------------------------------------------------------------------
 
@@ -34,13 +35,13 @@ if [ ! -f "$PLUGIN_DIR/package.json" ]; then
   exit 1
 fi
 
-if [ ! -f "$PLUGIN_DIR/dist/index.js" ]; then
-  log_error "plugin/dist/index.js not found — did you build the plugin?"
+if [ ! -f "$PLUGIN_DIR/index.ts" ]; then
+  log_error "plugin/index.ts not found"
   exit 1
 fi
 
-if [ ! -d "$PLUGIN_DIR/node_modules" ]; then
-  log_error "plugin/node_modules not found — run 'npm install' in plugin/ first"
+if [ ! -d "$PLUGIN_DIR/src" ]; then
+  log_error "plugin/src/ not found"
   exit 1
 fi
 
@@ -56,9 +57,10 @@ log "packaging plugin from $PLUGIN_DIR"
 
 tar -czf "$OUTPUT" \
   -C "$REPO_ROOT" \
-  plugin/dist \
-  plugin/node_modules \
+  plugin/index.ts \
+  plugin/src \
   plugin/package.json \
+  plugin/tsconfig.json \
   plugin/openclaw.plugin.json
 
 log "created $OUTPUT"

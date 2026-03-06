@@ -250,10 +250,9 @@ mkdir -p "$TARGET_DIR"
 cp -r "$PLUGIN_SRC/"* "$TARGET_DIR/"
 
 # ---------------------------------------------------------------------------
-# Install npm dependencies (only in local mode — tarball already includes
-# node_modules)
+# Install npm dependencies (always install if node_modules is missing)
 # ---------------------------------------------------------------------------
-if [ "$USE_LOCAL" = "1" ] && [ ! -d "$TARGET_DIR/node_modules" ]; then
+if [ ! -d "$TARGET_DIR/node_modules" ]; then
   NPM_BIN="${NPM_BIN:-npm}"
   require_cmd "$NPM_BIN" "Install Node.js + npm then retry: https://nodejs.org"
   log "installing npm dependencies"
@@ -268,7 +267,9 @@ fi
 # ---------------------------------------------------------------------------
 # Verify plugin can be loaded
 # ---------------------------------------------------------------------------
-if [ -f "$TARGET_DIR/dist/index.js" ]; then
+if [ -f "$TARGET_DIR/index.ts" ]; then
+  log "plugin entry point found: index.ts"
+elif [ -f "$TARGET_DIR/dist/index.js" ]; then
   if node -e "import('$TARGET_DIR/dist/index.js').then(() => process.exit(0)).catch(() => process.exit(1))" 2>/dev/null; then
     log "plugin sanity check passed"
   else
