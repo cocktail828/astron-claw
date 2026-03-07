@@ -174,8 +174,7 @@ class TestChatSseEndpoint:
             assert "Session not found" in resp.body.decode()
 
     async def test_500_send_to_bot_fails(self):
-        with patch("routers.sse.state") as mock_state, \
-             patch("routers.sse.get_redis") as mock_get_redis:
+        with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
             mock_state.bridge.get_sessions = AsyncMock(
@@ -183,8 +182,8 @@ class TestChatSseEndpoint:
             )
             mock_state.bridge.switch_session = AsyncMock(return_value=True)
             mock_state.bridge.send_to_bot = AsyncMock(return_value=None)
-            mock_redis = AsyncMock()
-            mock_get_redis.return_value = mock_redis
+            mock_queue = AsyncMock()
+            mock_state.queue = mock_queue
             from routers.sse import chat_sse, ChatRequest
             body = ChatRequest(content="hello", sessionId="sid-1")
             resp = await chat_sse(body, authorization="Bearer sk-valid")
@@ -192,8 +191,7 @@ class TestChatSseEndpoint:
             assert "Failed to send" in resp.body.decode()
 
     async def test_200_returns_sse_stream(self):
-        with patch("routers.sse.state") as mock_state, \
-             patch("routers.sse.get_redis") as mock_get_redis:
+        with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
             mock_state.bridge.get_sessions = AsyncMock(
@@ -201,18 +199,17 @@ class TestChatSseEndpoint:
             )
             mock_state.bridge.switch_session = AsyncMock(return_value=True)
             mock_state.bridge.send_to_bot = AsyncMock(return_value="req_abc")
-            mock_redis = AsyncMock()
-            mock_get_redis.return_value = mock_redis
+            mock_queue = AsyncMock()
+            mock_state.queue = mock_queue
             from routers.sse import chat_sse, ChatRequest
             body = ChatRequest(content="hello", sessionId="sid-1")
             resp = await chat_sse(body, authorization="Bearer sk-valid")
             assert resp.media_type == "text/event-stream"
             assert resp.headers["Cache-Control"] == "no-cache"
 
-    async def test_inbox_cleared_before_send(self):
-        """Stale events in inbox are deleted before sending to bot."""
-        with patch("routers.sse.state") as mock_state, \
-             patch("routers.sse.get_redis") as mock_get_redis:
+    async def test_inbox_purged_before_send(self):
+        """Stale events in inbox are purged and group is recreated before sending to bot."""
+        with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
             mock_state.bridge.get_sessions = AsyncMock(
@@ -220,15 +217,15 @@ class TestChatSseEndpoint:
             )
             mock_state.bridge.switch_session = AsyncMock(return_value=True)
             mock_state.bridge.send_to_bot = AsyncMock(return_value="req_abc")
-            mock_redis = AsyncMock()
-            mock_get_redis.return_value = mock_redis
+            mock_queue = AsyncMock()
+            mock_state.queue = mock_queue
             from routers.sse import chat_sse, ChatRequest
             body = ChatRequest(content="hello", sessionId="sid-1")
             await chat_sse(body, authorization="Bearer sk-valid")
-            # Verify inbox was deleted for this specific session
-            mock_redis.delete.assert_awaited_once_with(
-                "bridge:chat_inbox:sk-valid:sid-1"
-            )
+            # Verify inbox was purged and group recreated
+            inbox = "bridge:chat_inbox:sk-valid:sid-1"
+            mock_queue.purge.assert_awaited_once_with(inbox)
+            mock_queue.ensure_group.assert_awaited_once_with(inbox, "sse")
 
 
 class TestListSessionsEndpoint:

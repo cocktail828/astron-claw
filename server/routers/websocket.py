@@ -148,6 +148,7 @@ async def ws_chat(
                     token, content,
                     msg_type=msg_type_inner,
                     media=media,
+                    session_id=session_id,
                 )
                 if not req_id:
                     logger.warning("Chat send_to_bot failed (token={}...)", token[:10])

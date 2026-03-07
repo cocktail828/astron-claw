@@ -8,13 +8,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from infra.log import logger
-from infra.cache import get_redis
 import services.state as state
 
 router = APIRouter()
 
 _SSE_TIMEOUT = 300  # 5 minutes
-_POLL_INTERVAL = 1.0  # seconds between inbox polls
+_SSE_BLOCK_MS = 1000  # XREADGROUP block timeout — short so we can send heartbeats
 _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 _CHAT_INBOX_PREFIX = "bridge:chat_inbox:"
 
@@ -108,9 +107,10 @@ async def _stream_response(
     token: str,
     session_id: str,
     session_number: int,
+    req_id: str,
 ):
-    """Consume events from Redis inbox and yield SSE events."""
-    redis = get_redis()
+    """Consume events from Redis Stream inbox and yield SSE events."""
+    queue = state.queue
     inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
     deadline = time.time() + _SSE_TIMEOUT
     last_heartbeat = time.time()
@@ -123,16 +123,23 @@ async def _stream_response(
 
     try:
         while time.time() < deadline:
-            raw = await redis.lpop(inbox)
+            result = await queue.consume(
+                inbox, group="sse", consumer=req_id,
+                block_ms=_SSE_BLOCK_MS,
+            )
 
-            if raw is None:
-                # No message — send heartbeat if interval elapsed, then sleep
+            if result is None:
+                # No message — send heartbeat if interval elapsed
                 now = time.time()
                 if now - last_heartbeat >= _HEARTBEAT_INTERVAL:
                     yield _sse_comment()
                     last_heartbeat = now
-                await asyncio.sleep(_POLL_INTERVAL)
+                else:
+                    await asyncio.sleep(0)
                 continue
+
+            msg_id, raw = result
+            await queue.ack(inbox, "sse", msg_id)
 
             try:
                 event = json.loads(raw)
@@ -209,15 +216,18 @@ async def chat_sse(
     # Ensure this session is the active one (so bot responses route here)
     await state.bridge.switch_session(token, session_id)
 
-    # Clear stale events from previous request in this session's inbox
-    redis = get_redis()
-    await redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
+    # Clear stale events and reset consumer group for this SSE request
+    queue = state.queue
+    inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+    await queue.purge(inbox)
+    await queue.ensure_group(inbox, "sse")
 
-    # Send message to bot via Redis inbox
+    # Send message to bot via Redis Stream inbox
     req_id = await state.bridge.send_to_bot(
         token, content,
         msg_type=msg_type,
         media=body.media,
+        session_id=session_id,
     )
     if not req_id:
         return JSONResponse(
@@ -231,7 +241,7 @@ async def chat_sse(
     )
 
     return StreamingResponse(
-        _stream_response(token, session_id, session_number),
+        _stream_response(token, session_id, session_number, req_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

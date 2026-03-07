@@ -11,6 +11,7 @@ from infra.cache import init_redis, close_redis
 
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
+from services.queue import create_queue
 from services.session_store import SessionStore
 from services.admin_auth import AdminAuth
 from services.media_manager import MediaManager
@@ -35,7 +36,12 @@ async def lifespan(app: FastAPI):
     state.admin_auth = AdminAuth(session_factory, redis)
     state.media_manager = MediaManager(session_factory)
     session_store = SessionStore(session_factory, redis)
-    state.bridge = ConnectionBridge(redis, session_store=session_store)
+    queue = create_queue(
+        config.queue.type, redis,
+        max_stream_len=config.queue.max_stream_len,
+    )
+    state.queue = queue
+    state.bridge = ConnectionBridge(redis, session_store=session_store, queue=queue)
     state.bridge.set_media_manager(state.media_manager)
     await state.bridge.start()
 
