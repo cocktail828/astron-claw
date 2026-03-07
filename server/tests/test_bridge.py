@@ -182,14 +182,32 @@ class TestHandleBotMessage:
 
 class TestGetConnectionsSummary:
     async def test_get_connections_summary(self, bridge, mock_redis):
-        # smembers is called once for online_bots
         mock_redis.smembers.return_value = {"tok-1", "tok-2"}
-        mock_redis.hget.return_value = "some-worker"
-        mock_redis.exists.return_value = 1  # all workers alive
+
+        # Pipeline calls: first pipeline returns owners, second returns exists results
+        call_count = 0
+        def _make_pipeline():
+            nonlocal call_count
+            call_count += 1
+            from unittest.mock import MagicMock, AsyncMock
+            pipe = MagicMock()
+            if call_count == 1:
+                # hget pipeline: returns owner worker_id for each token
+                pipe.execute = AsyncMock(return_value=["worker-a", "worker-a"])
+            else:
+                # exists pipeline: returns 1 (alive) for each unique owner
+                pipe.execute = AsyncMock(return_value=[1])
+            return pipe
+        mock_redis.pipeline = _make_pipeline
 
         summary = await bridge.get_connections_summary()
         assert summary["tok-1"]["bot_online"] is True
         assert summary["tok-2"]["bot_online"] is True
+
+    async def test_get_connections_summary_empty(self, bridge, mock_redis):
+        mock_redis.smembers.return_value = set()
+        summary = await bridge.get_connections_summary()
+        assert summary == {}
 
 
 class TestSessionCreateSwitch:

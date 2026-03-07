@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 End-to-end integration test for Astron Claw.
-Tests: token API, bot WS, media upload/download.
+Tests: token API, bot WS, media upload/download, SSE chat message flow.
 
-NOTE: Chat tests use SSE (POST /bridge/chat) — see test_sse.py for SSE unit tests.
+NOTE: Requires a running server at localhost:8765 with MySQL + Redis.
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import io
 import json
 import sys
 import urllib.request
+import urllib.error
 import websockets
 
 SERVER = "http://localhost:8765"
@@ -34,6 +35,16 @@ def http_get(url, headers=None):
     req = urllib.request.Request(url, headers=hdrs, method="GET")
     with urllib.request.urlopen(req) as resp:
         return resp.read(), resp.headers
+
+
+def http_post_stream(url, data=None, headers=None, timeout=10):
+    """POST that returns the raw response for streaming SSE reads."""
+    body = json.dumps(data).encode() if data else b""
+    hdrs = {"Content-Type": "application/json"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def multipart_upload(url, file_name, file_data, mime_type, token):
@@ -274,6 +285,149 @@ async def main():
         )
     except Exception as e:
         report("PDF upload succeeds", False, str(e)[:80])
+
+    # ── 8. SSE Chat Message Flow ──
+    print("\n8. SSE Chat Message Flow")
+
+    token7 = http_post(f"{SERVER}/api/token")["token"]
+
+    # Connect a bot that echoes back
+    try:
+        echo_bot = await websockets.connect(f"{WS_SERVER}/bridge/bot?token={token7}")
+        report("Echo bot connects", True)
+    except Exception as e:
+        report("Echo bot connects", False, str(e)[:80])
+        echo_bot = None
+
+    if echo_bot:
+        # SSE POST without bot → should work since bot is connected
+        # Run SSE request + bot echo in parallel
+        async def bot_echo_loop(ws):
+            """Read one JSON-RPC request from bot inbox, send chunks + done."""
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                rpc = json.loads(raw)
+                rpc_id = rpc.get("rpc_request", rpc).get("id", rpc.get("id", ""))
+                session_id = rpc.get("rpc_request", rpc).get("params", {}).get("sessionId", "")
+                # Send chunk notifications
+                for text in ["Hello", " World"]:
+                    await ws.send(json.dumps({
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"text": text},
+                            },
+                        },
+                    }))
+                # Send final
+                await ws.send(json.dumps({
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": {
+                            "sessionUpdate": "agent_message_final",
+                            "content": {"text": "Hello World"},
+                        },
+                    },
+                }))
+                # Send JSON-RPC result
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "result": {"stopReason": "end_turn"},
+                }))
+            except Exception as exc:
+                print(f"    bot_echo_loop error: {exc}")
+
+        def parse_sse_events(raw_bytes):
+            """Parse SSE events from raw response bytes."""
+            events = []
+            text = raw_bytes.decode("utf-8", errors="replace")
+            for block in text.split("\n\n"):
+                block = block.strip()
+                if not block or block.startswith(":"):
+                    continue
+                event_type = "message"
+                data = ""
+                for line in block.split("\n"):
+                    if line.startswith("event: "):
+                        event_type = line[7:]
+                    elif line.startswith("data: "):
+                        data = line[6:]
+                if data:
+                    try:
+                        events.append((event_type, json.loads(data)))
+                    except json.JSONDecodeError:
+                        events.append((event_type, data))
+            return events
+
+        try:
+            # Start bot echo in background
+            bot_task = asyncio.create_task(bot_echo_loop(echo_bot))
+
+            # Small delay so bot is ready to receive
+            await asyncio.sleep(0.3)
+
+            # Send SSE chat request (sync, blocking read)
+            loop = asyncio.get_event_loop()
+            resp = await loop.run_in_executor(None, lambda: http_post_stream(
+                f"{SERVER}/bridge/chat",
+                data={"content": "Hi bot"},
+                headers={"Authorization": f"Bearer {token7}"},
+                timeout=10,
+            ))
+            raw_body = await loop.run_in_executor(None, resp.read)
+            resp.close()
+            await bot_task
+
+            events = parse_sse_events(raw_body)
+            event_types = [e[0] for e in events]
+
+            # Verify: first event is session, contains sessionId
+            has_session = (
+                len(events) > 0
+                and events[0][0] == "session"
+                and "sessionId" in events[0][1]
+            )
+            report("SSE first event is session", has_session,
+                   f"types={event_types[:5]}")
+
+            # Verify: has chunk events
+            chunk_events = [e for e in events if e[0] == "chunk"]
+            report("SSE receives chunk events", len(chunk_events) >= 1,
+                   f"chunk_count={len(chunk_events)}")
+
+            # Verify: last meaningful event is done
+            non_heartbeat = [e for e in events if e[0] != "heartbeat"]
+            has_done = len(non_heartbeat) > 0 and non_heartbeat[-1][0] == "done"
+            report("SSE ends with done event", has_done,
+                   f"last_type={non_heartbeat[-1][0] if non_heartbeat else '?'}")
+
+        except Exception as e:
+            report("SSE first event is session", False, str(e)[:80])
+            report("SSE receives chunk events", False, "skipped")
+            report("SSE ends with done event", False, "skipped")
+        finally:
+            await echo_bot.close()
+
+        # Test SSE auth rejection
+        try:
+            http_post_stream(
+                f"{SERVER}/bridge/chat",
+                data={"content": "hi"},
+                headers={"Authorization": "Bearer sk-invalid"},
+            )
+            report("SSE rejects bad token", False, "should have failed")
+        except urllib.error.HTTPError as e:
+            report("SSE rejects bad token", e.code == 401, f"status={e.code}")
+        except Exception as e:
+            report("SSE rejects bad token", False, str(e)[:80])
+    else:
+        for name in ["SSE first event is session", "SSE receives chunk events",
+                      "SSE ends with done event", "SSE rejects bad token"]:
+            report(name, False, "skipped - no echo bot")
 
     _summarize()
 

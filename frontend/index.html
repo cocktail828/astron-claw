@@ -1370,8 +1370,8 @@ body.drawer-pinned .session-overlay {
       <span>Astron Claw</span>
     </div>
     <div class="status-indicator">
-      <div class="status-dot" id="ws-status-dot"></div>
-      <span id="ws-status-text">Connected</span>
+      <div class="status-dot" id="conn-status-dot"></div>
+      <span id="conn-status-text">Connected</span>
     </div>
     <div class="header-actions">
       <button class="icon-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
@@ -1468,9 +1468,6 @@ let sessionList = [];        // [{id, number}, ...]
 let sessionMessages = {};    // sessionId -> innerHTML snapshot
 let sessionMeta = {};        // sessionId -> {preview, timestamp}
 let drawerPinned = false;
-
-const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_BASE_DELAY = 1000;
 
 // ===== Markdown Setup =====
 if (typeof marked !== 'undefined') {
@@ -1596,15 +1593,14 @@ function disconnect() {
   document.getElementById('messages-list').innerHTML = '';
   document.getElementById('connect-btn').disabled = false;
   showLoginStatus('', '');
-  reconnectAttempts = 0;
 
   const banner = document.getElementById('bot-banner');
   banner.classList.add('hidden');
 }
 
 function updateConnectionStatus(connected) {
-  const dot = document.getElementById('ws-status-dot');
-  const text = document.getElementById('ws-status-text');
+  const dot = document.getElementById('conn-status-dot');
+  const text = document.getElementById('conn-status-text');
 
   dot.className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
   text.textContent = connected ? 'Connected' : 'Disconnected';

@@ -19,7 +19,7 @@ _ONLINE_BOTS_KEY = "bridge:online_bots"
 _BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
 _WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
 _BOT_INBOX_PREFIX = "bridge:bot_inbox:"        # STREAM per token: messages TO bot
-_CHAT_INBOX_PREFIX = "bridge:chat_inbox:"      # STREAM per chat: messages TO chat
+CHAT_INBOX_PREFIX = "bridge:chat_inbox:"       # STREAM per chat: messages TO chat (shared with sse.py)
 _WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
 
 _WORKER_TTL = 30         # heartbeat TTL (seconds)
@@ -47,12 +47,12 @@ class ConnectionBridge:
     def __init__(
         self,
         redis: Redis,
-        session_store: "SessionStore",
-        queue: "MessageQueue",
+        session_store: SessionStore,
+        queue: MessageQueue,
     ):
         self._worker_id = uuid.uuid4().hex[:12]
         # token -> bot WebSocket (process-local)
-        self._bots: dict[str, "WebSocket"] = {}
+        self._bots: dict[str, WebSocket] = {}
         # request_id -> (token, session_id) for targeted response routing
         self._pending_requests: dict[str, tuple[str, str]] = {}
         # media manager reference
@@ -205,18 +205,38 @@ class ConnectionBridge:
     async def get_connections_summary(self) -> dict[str, dict]:
         """Return per-token bot online status (cluster-wide)."""
         online_bots = await self._redis.smembers(_ONLINE_BOTS_KEY)
+        if not online_bots:
+            return {}
 
-        live_bots: set[str] = set()
-        for token in online_bots:
-            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
-            if owner and await self._is_worker_alive(owner):
-                live_bots.add(token)
+        tokens = list(online_bots)
+
+        # Batch: fetch owner worker_id for each token
+        pipe = self._redis.pipeline()
+        for t in tokens:
+            pipe.hget(_BOT_WORKERS_KEY, t)
+        owners = await pipe.execute()
+
+        # Batch: check heartbeat for each unique owner
+        unique_owners = {o for o in owners if o}
+        alive_cache: dict[str, bool] = {}
+        if unique_owners:
+            pipe2 = self._redis.pipeline()
+            owner_list = list(unique_owners)
+            for o in owner_list:
+                o_str = o if isinstance(o, str) else o.decode()
+                pipe2.exists(f"{_WORKER_HEARTBEAT_PREFIX}{o_str}")
+            alive_results = await pipe2.execute()
+            for o, alive in zip(owner_list, alive_results):
+                o_str = o if isinstance(o, str) else o.decode()
+                alive_cache[o_str] = bool(alive)
 
         summary: dict[str, dict] = {}
-        for t in live_bots:
-            summary[t] = {
-                "bot_online": True,
-            }
+        for t, owner in zip(tokens, owners):
+            if not owner:
+                continue
+            o_str = owner if isinstance(owner, str) else owner.decode()
+            if alive_cache.get(o_str, False):
+                summary[t] = {"bot_online": True}
         return summary
 
     # ── Session management (delegated to SessionStore) ─────────────────────
@@ -378,7 +398,7 @@ class ConnectionBridge:
     async def _send_to_session(self, token: str, session_id: str, event: dict) -> None:
         """Send event to a specific session's chat inbox via Redis Stream."""
         try:
-            inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+            inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
             await self._queue.publish(inbox, json.dumps(event))
             logger.debug("Event pushed to session inbox: type={} session={} (token={}...)", event.get("type"), session_id[:8], token[:10])
         except Exception:

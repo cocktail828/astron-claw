@@ -13,7 +13,7 @@
 
 | 脚本 | 用途 | 运行方式 |
 |---|---|---|
-| `test_integration.py` | 全流程集成测试：Token API、Bot WS 鉴权、重复 bot 防护、媒体上传/下载 | `python3 test_integration.py` |
+| `test_integration.py` | 全流程集成测试：Token API、Bot WS 鉴权、重复 bot 防护、媒体上传/下载、SSE Chat 消息流转 | `python3 test_integration.py` |
 
 ## 运行示例
 
