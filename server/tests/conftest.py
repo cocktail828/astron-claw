@@ -75,3 +75,18 @@ def mock_session_store():
     store.remove_sessions = AsyncMock()
     store.cleanup_old_sessions = AsyncMock(return_value=0)
     return store
+
+
+# ── Mock MessageQueue ────────────────────────────────────────────────────
+
+@pytest.fixture()
+def mock_queue():
+    """Return an ``AsyncMock`` MessageQueue with sensible defaults."""
+    queue = AsyncMock()
+    queue.publish = AsyncMock(return_value="1709827200000-0")
+    queue.consume = AsyncMock(return_value=None)
+    queue.ack = AsyncMock()
+    queue.delete_queue = AsyncMock()
+    queue.purge = AsyncMock()
+    queue.ensure_group = AsyncMock()
+    return queue

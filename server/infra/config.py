@@ -46,10 +46,18 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class QueueConfig:
+    type: str
+    max_stream_len: int
+    block_ms: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     mysql: MysqlConfig
     redis: RedisConfig
     server: ServerConfig
+    queue: QueueConfig
 
 
 def load_config() -> AppConfig:
@@ -74,5 +82,10 @@ def load_config() -> AppConfig:
             workers=int(os.getenv("SERVER_WORKERS", str((os.cpu_count() or 1) + 1))),
             log_level=os.getenv("SERVER_LOG_LEVEL", "info"),
             access_log=os.getenv("SERVER_ACCESS_LOG", "true").lower() == "true",
+        ),
+        queue=QueueConfig(
+            type=os.getenv("QUEUE_TYPE", "redis_stream"),
+            max_stream_len=int(os.getenv("QUEUE_MAX_STREAM_LEN", "1000")),
+            block_ms=int(os.getenv("QUEUE_BLOCK_MS", "5000")),
         ),
     )
