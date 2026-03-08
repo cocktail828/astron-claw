@@ -161,8 +161,8 @@ class ConnectionBridge:
                 await task
             except asyncio.CancelledError:
                 pass
-        # Notify BEFORE cleanup so the event can still be delivered
-        await self.notify_bot_disconnected(token)
+        # Notify BEFORE cleanup so the log reflects accurate state
+        self.notify_bot_disconnected(token)
         await self._redis.zrem(_BOT_ALIVE_KEY, token)
         await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
         await self._cleanup_chat_inboxes(token)
@@ -219,16 +219,13 @@ class ConnectionBridge:
         logger.info("Session created: {} (token={}...)", session_id[:8], token[:10])
         return session_id, session_number
 
-    async def get_active_session(self, token: str) -> Optional[str]:
-        return await self._session_store.get_active_session(token)
-
     async def reset_session(self, token: str) -> tuple[str, int]:
         return await self.create_session(token)
 
-    async def switch_session(self, token: str, session_id: str) -> bool:
-        return await self._session_store.switch_session(token, session_id)
+    async def get_session(self, token: str, session_id: str) -> Optional[tuple[str, int]]:
+        return await self._session_store.get_session(token, session_id)
 
-    async def get_sessions(self, token: str) -> tuple[list[tuple[str, int]], str]:
+    async def get_sessions(self, token: str) -> list[tuple[str, int]]:
         return await self._session_store.get_sessions(token)
 
     async def cleanup_old_sessions(self, max_age_days: float) -> int:
@@ -242,18 +239,15 @@ class ConnectionBridge:
         user_message: str,
         msg_type: str = "text",
         media: Optional[dict] = None,
-        session_id: Optional[str] = None,
+        session_id: str = "",
     ) -> Optional[str]:
         """Create a JSON-RPC request and send it to the bot.
 
-        If session_id is provided it is used directly (avoids race conditions
-        when multiple sessions send concurrently).  Otherwise falls back to
-        get_active_session / create_session.
+        session_id must be provided by the caller (resolved in the SSE layer).
         """
         if not session_id:
-            session_id = await self.get_active_session(token)
-            if not session_id:
-                session_id, _ = await self.create_session(token)
+            logger.error("send_to_bot called without session_id (token={}...)", token[:10])
+            return None
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         self._pending_requests[request_id] = (token, session_id)
@@ -324,7 +318,7 @@ class ConnectionBridge:
             # Notifications carry sessionId in params; route to that session
             session_id = params.get("sessionId") if params else None
             if not session_id:
-                session_id = await self.get_active_session(token)
+                logger.warning("Bot notification missing sessionId: method={} (token={}...)", method, token[:10])
             # Chunk events are high-frequency — use DEBUG to avoid flooding INFO
             if chat_event and chat_event.get("type") in ("chunk", "thinking"):
                 logger.debug("Bot event: method={} type={} session={} (token={}...)", method, chat_event["type"], session_id[:8] if session_id else "?", token[:10])
@@ -338,7 +332,7 @@ class ConnectionBridge:
 
         if "id" in msg and "result" in msg:
             info = self._pending_requests.pop(msg["id"], None)
-            session_id = info[1] if info else await self.get_active_session(token)
+            session_id = info[1] if info else None
             logger.info("Bot result: req={} session={} (token={}...)", msg["id"], session_id[:8] if session_id else "?", token[:10])
 
         if "id" in msg and "error" in msg:
@@ -346,23 +340,19 @@ class ConnectionBridge:
             error_msg = msg["error"].get("message", "Unknown error from bot")
             logger.error("Bot JSON-RPC error: {} (token={}...)", error_msg, token[:10])
             error_event = {"type": "error", "content": error_msg}
-            session_id = info[1] if info else await self.get_active_session(token)
+            session_id = info[1] if info else None
             if session_id:
                 await self._send_to_session(token, session_id, error_event)
+            else:
+                logger.warning("Cannot route RPC error: no pending request (token={}...)", token[:10])
 
-    # ── Bot status notifications ──────────────────────────────────────────────
+    # ── Bot status logging ──────────────────────────────────────────────────
 
-    async def notify_bot_connected(self, token: str) -> None:
+    def notify_bot_connected(self, token: str) -> None:
         logger.info("Bot status -> connected (token={}...)", token[:10])
-        session_id = await self.get_active_session(token)
-        if session_id:
-            await self._send_to_session(token, session_id, {"type": "bot_status", "connected": True})
 
-    async def notify_bot_disconnected(self, token: str) -> None:
+    def notify_bot_disconnected(self, token: str) -> None:
         logger.info("Bot status -> disconnected (token={}...)", token[:10])
-        session_id = await self.get_active_session(token)
-        if session_id:
-            await self._send_to_session(token, session_id, {"type": "bot_status", "connected": False})
 
     # ── Broadcasting ──────────────────────────────────────────────────────────
 

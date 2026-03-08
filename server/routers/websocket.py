@@ -27,7 +27,7 @@ async def ws_bot(
         return
 
     logger.info("Bot connected: {}...", bot_token[:10])
-    await state.bridge.notify_bot_connected(bot_token)
+    state.bridge.notify_bot_connected(bot_token)
     try:
         while True:
             raw = await ws.receive_text()
