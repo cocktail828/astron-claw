@@ -140,6 +140,7 @@ async def _stream_response(
 
             msg_id, raw = result
             await queue.ack(inbox, "sse", msg_id)
+            await queue.delete_message(inbox, msg_id)
 
             try:
                 event = json.loads(raw)
@@ -162,6 +163,24 @@ async def _stream_response(
     except Exception:
         logger.exception("SSE: stream error (token={}...)", token[:10])
         yield _sse_event("error", {"content": "Internal server error"})
+
+
+async def _stream_with_cleanup(
+    token: str,
+    session_id: str,
+    session_number: int,
+    req_id: str,
+):
+    """Wrap _stream_response and delete the chat inbox stream when done."""
+    try:
+        async for event in _stream_response(token, session_id, session_number, req_id):
+            yield event
+    finally:
+        try:
+            inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
+            await state.queue.delete_queue(inbox)
+        except Exception:
+            logger.warning("SSE: cleanup failed (token={}...)", token[:10])
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +260,7 @@ async def chat_sse(
     )
 
     return StreamingResponse(
-        _stream_response(token, session_id, session_number, req_id),
+        _stream_with_cleanup(token, session_id, session_number, req_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

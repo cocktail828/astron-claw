@@ -2,10 +2,12 @@
 """Astron Claw Bridge Server — production entry point.
 
 Uses uvloop (high-performance event loop) + httptools (C-level HTTP parsing)
-for maximum single-process throughput. Configuration is loaded from .env.
+for maximum throughput. Configuration is loaded from .env.
 
-NOTE: workers must remain 1 for this application because WebSocket
-connections and in-memory bot/chat registries are process-local.
+Multi-worker is supported: bot liveness is tracked in a shared Redis ZSET
+(bridge:bot_alive) and cross-worker messaging goes through Redis Streams
+(bridge:bot_inbox / bridge:chat_inbox), so each worker only holds its own
+WebSocket connections while the cluster behaves as a single logical bridge.
 """
 
 import uvicorn

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
@@ -15,14 +16,12 @@ if TYPE_CHECKING:
     from services.queue import MessageQueue
     from services.session_store import SessionStore
 
-_ONLINE_BOTS_KEY = "bridge:online_bots"
-_BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
-_WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
+_BOT_ALIVE_KEY = "bridge:bot_alive"            # ZSET: score=timestamp, member=token
 _BOT_INBOX_PREFIX = "bridge:bot_inbox:"        # STREAM per token: messages TO bot
 CHAT_INBOX_PREFIX = "bridge:chat_inbox:"       # STREAM per chat: messages TO chat (shared with sse.py)
-_WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
+_CLEANUP_LOCK_KEY = "bridge:cleanup_lock"      # distributed lock for stale cleanup
 
-_WORKER_TTL = 30         # heartbeat TTL (seconds)
+_BOT_TTL = 30            # seconds before a bot is considered offline
 _HEARTBEAT_INTERVAL = 10 # how often each worker refreshes its heartbeat
 _CONSUME_BLOCK_MS = 5000 # XREADGROUP block timeout (milliseconds)
 
@@ -35,13 +34,14 @@ class ConnectionBridge:
     Session data is persisted in MySQL via SessionStore, with Redis as a
     write-through cache. Bot WebSocket refs stay in-memory.
 
-    Multi-worker safe: connection registry lives in Redis, cross-worker
-    message routing uses per-token Redis Streams (XADD / XREADGROUP),
-    compatible with both standalone and cluster modes.
+    Multi-worker safe: cross-worker message routing uses per-token Redis
+    Streams (XADD / XREADGROUP), compatible with both standalone and
+    cluster modes.
 
-    Worker liveness is tracked via per-worker heartbeat keys with a TTL.
-    This ensures stale bot registrations from crashed or restarted workers
-    are detected without requiring a startup cleanup — safe for rolling updates.
+    Bot liveness is tracked via a single ZSET (``bridge:bot_alive``) where
+    each member is a token and the score is the last heartbeat timestamp.
+    A distributed lock (``bridge:cleanup_lock``) ensures only one worker
+    per cycle performs stale-entry cleanup.
     """
 
     def __init__(
@@ -71,48 +71,57 @@ class ConnectionBridge:
 
     async def start(self) -> None:
         """Start the worker heartbeat."""
-        await self._redis.sadd(_WORKERS_KEY, self._worker_id)
         self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
         logger.info("Bridge worker {} started", self._worker_id)
 
     async def _run_heartbeat(self) -> None:
-        """Periodically refresh this worker's heartbeat key in Redis."""
+        """Periodically refresh bot heartbeats and compete for cleanup duty."""
         while not self._shutting_down:
             try:
-                await self._redis.set(
-                    f"{_WORKER_HEARTBEAT_PREFIX}{self._worker_id}",
-                    "1",
-                    ex=_WORKER_TTL,
+                now = time.time()
+                # All workers: refresh heartbeat for locally connected bots
+                if self._bots:
+                    mapping = {token: now for token in self._bots}
+                    await self._redis.zadd(_BOT_ALIVE_KEY, mapping)
+
+                # Compete for cleanup lock — only winner runs stale cleanup
+                acquired = await self._redis.set(
+                    _CLEANUP_LOCK_KEY, self._worker_id,
+                    nx=True, ex=_HEARTBEAT_INTERVAL,
                 )
-                # Re-sync this worker's presence in workers SET
-                await self._redis.sadd(_WORKERS_KEY, self._worker_id)
-                # Re-sync local bot registrations into Redis
-                for token in self._bots:
-                    await self._redis.sadd(_ONLINE_BOTS_KEY, token)
-                    await self._redis.hset(_BOT_WORKERS_KEY, token, self._worker_id)
-                # Clean stale worker IDs from workers SET
-                all_workers = await self._redis.smembers(_WORKERS_KEY)
-                for wid in all_workers:
-                    wid_str = wid if isinstance(wid, str) else wid.decode()
-                    if wid_str != self._worker_id and not await self._is_worker_alive(wid_str):
-                        await self._redis.srem(_WORKERS_KEY, wid_str)
-                # Clean stale bot registrations owned by dead workers
-                bot_tokens = await self._redis.hgetall(_BOT_WORKERS_KEY)
-                for tok, owner in bot_tokens.items():
-                    tok_str = tok if isinstance(tok, str) else tok.decode()
-                    owner_str = owner if isinstance(owner, str) else owner.decode()
-                    if owner_str != self._worker_id and not await self._is_worker_alive(owner_str):
-                        await self._redis.srem(_ONLINE_BOTS_KEY, tok_str)
-                        await self._redis.hdel(_BOT_WORKERS_KEY, tok_str)
-                        await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{tok_str}")
+                if acquired:
+                    await self._cleanup_expired_bots(now)
             except Exception:
                 if not self._shutting_down:
-                    logger.exception("Heartbeat refresh failed (worker={})", self._worker_id)
+                    logger.exception("Heartbeat failed (worker={})", self._worker_id)
             await asyncio.sleep(_HEARTBEAT_INTERVAL)
 
-    async def _is_worker_alive(self, worker_id: str) -> bool:
-        """Return True if the given worker's heartbeat key is still present."""
-        return bool(await self._redis.exists(f"{_WORKER_HEARTBEAT_PREFIX}{worker_id}"))
+    async def _cleanup_expired_bots(self, now: float) -> None:
+        """Remove expired bot entries and their associated inboxes.
+
+        Called only by the worker that acquired the cleanup lock.
+        """
+        cutoff = now - _BOT_TTL
+        expired = await self._redis.zrangebyscore(_BOT_ALIVE_KEY, "-inf", cutoff)
+        if not expired:
+            return
+
+        for tok in expired:
+            tok_str = tok if isinstance(tok, str) else tok.decode()
+            await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{tok_str}")
+            await self._cleanup_chat_inboxes(tok_str)
+
+        await self._redis.zremrangebyscore(_BOT_ALIVE_KEY, "-inf", cutoff)
+        logger.info("Cleanup: removed {} expired bot(s)", len(expired))
+
+    async def _cleanup_chat_inboxes(self, token: str) -> None:
+        """Delete all chat inbox streams for the given token."""
+        pattern = f"{CHAT_INBOX_PREFIX}{token}:*"
+        batch: list[str] = []
+        async for key in self._redis.scan_iter(match=pattern, count=100):
+            batch.append(key)
+        if batch:
+            await self._redis.delete(*batch)
 
     def set_media_manager(self, media_manager) -> None:
         """Set the media manager for resolving download URLs in messages."""
@@ -125,20 +134,13 @@ class ConnectionBridge:
         if token in self._bots:
             return False
 
-        if await self._redis.sismember(_ONLINE_BOTS_KEY, token):
-            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
-            if owner and await self._is_worker_alive(owner):
-                return False
-            await self._redis.srem(_ONLINE_BOTS_KEY, token)
-            await self._redis.hdel(_BOT_WORKERS_KEY, token)
-            logger.warning(
-                "Cleaned stale bot registration (dead worker={}, token={}...)",
-                owner, token[:10],
-            )
+        # Check if another worker holds a live bot for this token
+        score = await self._redis.zscore(_BOT_ALIVE_KEY, token)
+        if score is not None and (time.time() - score) < _BOT_TTL:
+            return False
 
         self._bots[token] = ws
-        await self._redis.sadd(_ONLINE_BOTS_KEY, token)
-        await self._redis.hset(_BOT_WORKERS_KEY, token, self._worker_id)
+        await self._redis.zadd(_BOT_ALIVE_KEY, {token: time.time()})
         # Ensure consumer group exists and start consuming bot inbox
         inbox = f"{_BOT_INBOX_PREFIX}{token}"
         await self._queue.ensure_group(inbox, "bot")
@@ -148,7 +150,7 @@ class ConnectionBridge:
         return True
 
     async def unregister_bot(self, token: str) -> None:
-        """Remove bot from local dict + clean up Redis and inbox."""
+        """Remove bot from local dict + clean up Redis and inboxes."""
         self._bots.pop(token, None)
         # Stop bot inbox consuming
         task_key = f"bot:{token}"
@@ -159,14 +161,12 @@ class ConnectionBridge:
                 await task
             except asyncio.CancelledError:
                 pass
+        # Notify BEFORE cleanup so the event can still be delivered
+        await self.notify_bot_disconnected(token)
+        await self._redis.zrem(_BOT_ALIVE_KEY, token)
         await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
-        owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
-        if owner == self._worker_id:
-            await self._redis.srem(_ONLINE_BOTS_KEY, token)
-            await self._redis.hdel(_BOT_WORKERS_KEY, token)
-            logger.info("Bot unregistered from Redis (worker={}, token={}...)", self._worker_id, token[:10])
-        else:
-            logger.info("Bot removed locally only (owner={}, self={}, token={}...)", owner, self._worker_id, token[:10])
+        await self._cleanup_chat_inboxes(token)
+        logger.info("Bot unregistered (worker={}, token={}...)", self._worker_id, token[:10])
 
     async def remove_bot_sessions(self, token: str) -> None:
         """Destroy session data for a token. Called only on admin token delete."""
@@ -184,60 +184,31 @@ class ConnectionBridge:
             # Bot may be on a remote worker — push disconnect command to inbox
             inbox = f"{_BOT_INBOX_PREFIX}{token}"
             await self._queue.publish(inbox, json.dumps({"_disconnect": True}))
-
-        # Clean remaining Redis keys
-        await self._redis.srem(_ONLINE_BOTS_KEY, token)
-        await self._redis.hdel(_BOT_WORKERS_KEY, token)
-        await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
+            # Clean Redis keys (unregister_bot already handles the local case)
+            await self._redis.zrem(_BOT_ALIVE_KEY, token)
+            await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
+            await self._cleanup_chat_inboxes(token)
         logger.info("Bot sessions fully removed (token={}...)", token[:10])
 
     # ── Queries (read from Redis for cluster-wide view) ───────────────────────
 
     async def is_bot_connected(self, token: str) -> bool:
-        """Return True only if a bot is registered AND its owning worker is alive."""
-        if not await self._redis.sismember(_ONLINE_BOTS_KEY, token):
+        """Return True only if a bot's heartbeat is fresh (within _BOT_TTL)."""
+        score = await self._redis.zscore(_BOT_ALIVE_KEY, token)
+        if score is None:
             return False
-        owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
-        if not owner:
-            return False
-        return await self._is_worker_alive(owner)
+        return (time.time() - score) < _BOT_TTL
 
     async def get_connections_summary(self) -> dict[str, dict]:
         """Return per-token bot online status (cluster-wide)."""
-        online_bots = await self._redis.smembers(_ONLINE_BOTS_KEY)
-        if not online_bots:
-            return {}
-
-        tokens = list(online_bots)
-
-        # Batch: fetch owner worker_id for each token
-        pipe = self._redis.pipeline()
-        for t in tokens:
-            pipe.hget(_BOT_WORKERS_KEY, t)
-        owners = await pipe.execute()
-
-        # Batch: check heartbeat for each unique owner
-        unique_owners = {o for o in owners if o}
-        alive_cache: dict[str, bool] = {}
-        if unique_owners:
-            pipe2 = self._redis.pipeline()
-            owner_list = list(unique_owners)
-            for o in owner_list:
-                o_str = o if isinstance(o, str) else o.decode()
-                pipe2.exists(f"{_WORKER_HEARTBEAT_PREFIX}{o_str}")
-            alive_results = await pipe2.execute()
-            for o, alive in zip(owner_list, alive_results):
-                o_str = o if isinstance(o, str) else o.decode()
-                alive_cache[o_str] = bool(alive)
-
-        summary: dict[str, dict] = {}
-        for t, owner in zip(tokens, owners):
-            if not owner:
-                continue
-            o_str = owner if isinstance(owner, str) else owner.decode()
-            if alive_cache.get(o_str, False):
-                summary[t] = {"bot_online": True}
-        return summary
+        cutoff = time.time() - _BOT_TTL
+        alive_tokens = await self._redis.zrangebyscore(
+            _BOT_ALIVE_KEY, cutoff, "+inf",
+        )
+        return {
+            (t if isinstance(t, str) else t.decode()): {"bot_online": True}
+            for t in alive_tokens
+        }
 
     # ── Session management (delegated to SessionStore) ─────────────────────
 
@@ -396,9 +367,16 @@ class ConnectionBridge:
     # ── Broadcasting ──────────────────────────────────────────────────────────
 
     async def _send_to_session(self, token: str, session_id: str, event: dict) -> None:
-        """Send event to a specific session's chat inbox via Redis Stream."""
+        """Send event to a specific session's chat inbox via Redis Stream.
+
+        Skips the write when the inbox stream does not exist, which means
+        no SSE consumer is currently listening.
+        """
         try:
             inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
+            if not await self._redis.exists(inbox):
+                logger.debug("No active SSE consumer, skipping event: type={} session={} (token={}...)", event.get("type"), session_id[:8], token[:10])
+                return
             await self._queue.publish(inbox, json.dumps(event))
             logger.debug("Event pushed to session inbox: type={} session={} (token={}...)", event.get("type"), session_id[:8], token[:10])
         except Exception:
@@ -424,6 +402,7 @@ class ConnectionBridge:
                 msg_id, raw = result
                 data = json.loads(raw)
                 await self._queue.ack(inbox, "bot", msg_id)
+                await self._queue.delete_message(inbox, msg_id)
                 # Handle disconnect command from admin token delete
                 if data.get("_disconnect"):
                     bot_ws = self._bots.get(token)
@@ -454,22 +433,16 @@ class ConnectionBridge:
         self._shutting_down = True
         logger.info("Bridge worker {} shutting down...", self._worker_id)
 
-        await self._redis.delete(f"{_WORKER_HEARTBEAT_PREFIX}{self._worker_id}")
-
         # Close bot connections and clean Redis
         for token, ws in list(self._bots.items()):
             try:
                 await ws.close(code=4000, reason="Server restarting")
             except Exception:
                 pass
-            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
-            if owner == self._worker_id:
-                await self._redis.srem(_ONLINE_BOTS_KEY, token)
-                await self._redis.hdel(_BOT_WORKERS_KEY, token)
+            await self._redis.zrem(_BOT_ALIVE_KEY, token)
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
+            await self._cleanup_chat_inboxes(token)
         self._bots.clear()
-
-        await self._redis.srem(_WORKERS_KEY, self._worker_id)
         self._pending_requests.clear()
 
         # Cancel all polling tasks

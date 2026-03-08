@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,30 +22,37 @@ def bridge(mock_redis, mock_session_store, mock_queue):
 class TestRegisterBot:
     async def test_register_bot_success(self, bridge, mock_redis, mock_queue):
         ws = AsyncMock()
-        mock_redis.sismember.return_value = False
+        mock_redis.zscore.return_value = None  # no existing bot
         result = await bridge.register_bot("tok-1", ws)
         assert result is True
         assert "tok-1" in bridge._bots
-        mock_redis.sadd.assert_awaited()
+        mock_redis.zadd.assert_awaited()
         mock_queue.ensure_group.assert_awaited_once_with("bridge:bot_inbox:tok-1", "bot")
         # Consume task should be created
         assert "bot:tok-1" in bridge._poll_tasks
 
     async def test_register_bot_local_dup(self, bridge, mock_redis):
         ws1, ws2 = AsyncMock(), AsyncMock()
-        mock_redis.sismember.return_value = False
+        mock_redis.zscore.return_value = None
         await bridge.register_bot("tok-1", ws1)
 
         result = await bridge.register_bot("tok-1", ws2)
         assert result is False
 
-    async def test_register_bot_redis_dup(self, bridge, mock_redis):
+    async def test_register_bot_remote_alive(self, bridge, mock_redis):
+        """Reject registration when another worker has a live bot for this token."""
         ws = AsyncMock()
-        mock_redis.sismember.return_value = True
-        mock_redis.hget.return_value = "other-worker-id"
-        mock_redis.exists.return_value = 1  # owning worker is alive
+        mock_redis.zscore.return_value = time.time() - 5  # fresh (within 30s)
         result = await bridge.register_bot("tok-remote", ws)
         assert result is False
+
+    async def test_register_bot_remote_expired(self, bridge, mock_redis, mock_queue):
+        """Allow registration when the existing bot's heartbeat has expired."""
+        ws = AsyncMock()
+        mock_redis.zscore.return_value = time.time() - 60  # stale (>30s)
+        result = await bridge.register_bot("tok-stale", ws)
+        assert result is True
+        assert "tok-stale" in bridge._bots
 
 
 class TestSendToBot:
@@ -111,8 +119,9 @@ class TestHandleBotMessage:
         # Ping messages should be silently ignored
         await bridge.handle_bot_message("tok-1", json.dumps({"type": "ping"}))
 
-    async def test_routes_chunk_to_session_from_params(self, bridge, mock_queue):
+    async def test_routes_chunk_to_session_from_params(self, bridge, mock_redis, mock_queue):
         """Streaming notifications with sessionId in params are routed to that session's inbox."""
+        mock_redis.exists.return_value = 1  # SSE consumer active
         msg = {
             "method": "session/update",
             "params": {
@@ -149,8 +158,9 @@ class TestHandleBotMessage:
         # Pending request should be cleaned up
         assert "req_123" not in bridge._pending_requests
 
-    async def test_routes_error_to_pending_request_session(self, bridge, mock_queue):
+    async def test_routes_error_to_pending_request_session(self, bridge, mock_redis, mock_queue):
         """JSON-RPC error is routed to the session that made the request."""
+        mock_redis.exists.return_value = 1  # SSE consumer active
         bridge._pending_requests["req_456"] = ("tok-1", "session-xyz")
 
         msg = {
@@ -182,32 +192,30 @@ class TestHandleBotMessage:
 
 class TestGetConnectionsSummary:
     async def test_get_connections_summary(self, bridge, mock_redis):
-        mock_redis.smembers.return_value = {"tok-1", "tok-2"}
-
-        # Pipeline calls: first pipeline returns owners, second returns exists results
-        call_count = 0
-        def _make_pipeline():
-            nonlocal call_count
-            call_count += 1
-            from unittest.mock import MagicMock, AsyncMock
-            pipe = MagicMock()
-            if call_count == 1:
-                # hget pipeline: returns owner worker_id for each token
-                pipe.execute = AsyncMock(return_value=["worker-a", "worker-a"])
-            else:
-                # exists pipeline: returns 1 (alive) for each unique owner
-                pipe.execute = AsyncMock(return_value=[1])
-            return pipe
-        mock_redis.pipeline = _make_pipeline
-
+        mock_redis.zrangebyscore.return_value = ["tok-1", "tok-2"]
         summary = await bridge.get_connections_summary()
         assert summary["tok-1"]["bot_online"] is True
         assert summary["tok-2"]["bot_online"] is True
+        mock_redis.zrangebyscore.assert_awaited_once()
 
     async def test_get_connections_summary_empty(self, bridge, mock_redis):
-        mock_redis.smembers.return_value = set()
+        mock_redis.zrangebyscore.return_value = []
         summary = await bridge.get_connections_summary()
         assert summary == {}
+
+
+class TestIsBotConnected:
+    async def test_bot_connected(self, bridge, mock_redis):
+        mock_redis.zscore.return_value = time.time() - 5  # fresh
+        assert await bridge.is_bot_connected("tok-1") is True
+
+    async def test_bot_expired(self, bridge, mock_redis):
+        mock_redis.zscore.return_value = time.time() - 60  # stale
+        assert await bridge.is_bot_connected("tok-1") is False
+
+    async def test_bot_not_found(self, bridge, mock_redis):
+        mock_redis.zscore.return_value = None
+        assert await bridge.is_bot_connected("tok-1") is False
 
 
 class TestSessionCreateSwitch:
@@ -268,8 +276,9 @@ class TestSendToBotRemote:
 
 
 class TestBotStatusNotification:
-    async def test_notify_bot_connected_sends_to_active_session(self, bridge, mock_queue, mock_session_store):
+    async def test_notify_bot_connected_sends_to_active_session(self, bridge, mock_redis, mock_queue, mock_session_store):
         """bot_status is sent to the current active session only."""
+        mock_redis.exists.return_value = 1  # SSE consumer active
         mock_session_store.get_active_session.return_value = "session-active"
         await bridge.notify_bot_connected("tok-1")
         mock_queue.publish.assert_awaited_once()
@@ -312,3 +321,59 @@ class TestPollBotInbox:
 
         bridge._bots["tok-1"].send_json.assert_not_awaited()
         mock_queue.ack.assert_not_awaited()
+
+
+class TestUnregisterBot:
+    async def test_unregister_cleans_redis_and_inboxes(self, bridge, mock_redis, mock_queue):
+        ws = AsyncMock()
+        mock_redis.zscore.return_value = None
+        await bridge.register_bot("tok-1", ws)
+
+        await bridge.unregister_bot("tok-1")
+        assert "tok-1" not in bridge._bots
+        mock_redis.zrem.assert_awaited_with("bridge:bot_alive", "tok-1")
+        mock_queue.delete_queue.assert_awaited_with("bridge:bot_inbox:tok-1")
+
+
+class TestCleanupExpiredBots:
+    async def test_cleanup_removes_expired_bots(self, bridge, mock_redis, mock_queue):
+        """Expired bots' inboxes are deleted and entries removed from ZSET."""
+        mock_redis.zrangebyscore.return_value = ["tok-dead"]
+
+        async def _scan_iter(**kwargs):
+            yield "bridge:chat_inbox:tok-dead:sid-1"
+        mock_redis.scan_iter = _scan_iter
+
+        now = time.time()
+        await bridge._cleanup_expired_bots(now)
+
+        mock_queue.delete_queue.assert_awaited_with("bridge:bot_inbox:tok-dead")
+        mock_redis.delete.assert_awaited_with("bridge:chat_inbox:tok-dead:sid-1")
+        mock_redis.zremrangebyscore.assert_awaited_once()
+
+    async def test_cleanup_noop_when_no_expired(self, bridge, mock_redis, mock_queue):
+        mock_redis.zrangebyscore.return_value = []
+        await bridge._cleanup_expired_bots(time.time())
+        mock_queue.delete_queue.assert_not_awaited()
+        mock_redis.zremrangebyscore.assert_not_awaited()
+
+
+class TestHeartbeat:
+    async def test_heartbeat_refreshes_local_bots(self, bridge, mock_redis):
+        """Heartbeat ZADD refreshes scores for locally connected bots."""
+        bridge._bots["tok-local"] = AsyncMock()
+        mock_redis.set.return_value = False  # don't acquire lock
+
+        # Let one iteration run then stop
+        original_sleep = asyncio.sleep
+
+        async def _stop_after_one(_):
+            bridge._shutting_down = True
+
+        with patch("asyncio.sleep", side_effect=_stop_after_one):
+            await bridge._run_heartbeat()
+
+        mock_redis.zadd.assert_awaited_once()
+        call_args = mock_redis.zadd.call_args
+        assert call_args[0][0] == "bridge:bot_alive"
+        assert "tok-local" in call_args[0][1]

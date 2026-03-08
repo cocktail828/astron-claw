@@ -45,10 +45,6 @@ def mock_redis():
     redis.setex = AsyncMock(return_value=True)
     redis.exists = AsyncMock(return_value=0)
     redis.delete = AsyncMock(return_value=1)
-    redis.sismember = AsyncMock(return_value=False)
-    redis.sadd = AsyncMock(return_value=1)
-    redis.srem = AsyncMock(return_value=1)
-    redis.smembers = AsyncMock(return_value=set())
     redis.hget = AsyncMock(return_value=None)
     redis.hset = AsyncMock(return_value=1)
     redis.hgetall = AsyncMock(return_value={})
@@ -56,6 +52,18 @@ def mock_redis():
     redis.ttl = AsyncMock(return_value=-2)
     redis.expire = AsyncMock(return_value=True)
     redis.ping = AsyncMock(return_value=True)
+    # ZSET mocks
+    redis.zadd = AsyncMock(return_value=1)
+    redis.zrem = AsyncMock(return_value=1)
+    redis.zscore = AsyncMock(return_value=None)
+    redis.zrangebyscore = AsyncMock(return_value=[])
+    redis.zremrangebyscore = AsyncMock(return_value=0)
+    redis.zcount = AsyncMock(return_value=0)
+    # scan_iter mock (returns async iterator)
+    async def _empty_scan_iter(**kwargs):
+        return
+        yield  # pragma: no cover – makes this an async generator
+    redis.scan_iter = _empty_scan_iter
     # Pipeline mock: returns a chainable object with async execute()
     def _make_pipeline():
         pipe = MagicMock()
@@ -89,6 +97,7 @@ def mock_queue():
     queue.publish = AsyncMock(return_value="1709827200000-0")
     queue.consume = AsyncMock(return_value=None)
     queue.ack = AsyncMock()
+    queue.delete_message = AsyncMock()
     queue.delete_queue = AsyncMock()
     queue.purge = AsyncMock()
     queue.ensure_group = AsyncMock()
