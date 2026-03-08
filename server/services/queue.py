@@ -55,6 +55,11 @@ class MessageQueue(ABC):
         ...
 
     @abstractmethod
+    async def delete_message(self, queue_name: str, message_id: str) -> None:
+        """Remove *message_id* from the stream to reclaim memory."""
+        ...
+
+    @abstractmethod
     async def delete_queue(self, queue_name: str) -> None:
         """Delete the queue and all its data."""
         ...
@@ -143,6 +148,11 @@ class RedisStreamQueue(MessageQueue):
 
     async def ack(self, queue_name: str, group: str, message_id: str) -> None:
         await self._redis.xack(queue_name, group, message_id)
+
+    # -- delete_message ------------------------------------------------------
+
+    async def delete_message(self, queue_name: str, message_id: str) -> None:
+        await self._redis.xdel(queue_name, message_id)
 
     # -- delete_queue --------------------------------------------------------
 

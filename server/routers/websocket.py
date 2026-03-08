@@ -38,4 +38,3 @@ async def ws_bot(
         logger.exception("Bot connection error: {}...", bot_token[:10])
     finally:
         await state.bridge.unregister_bot(bot_token)
-        await state.bridge.notify_bot_disconnected(bot_token)
