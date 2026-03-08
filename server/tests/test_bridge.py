@@ -56,13 +56,10 @@ class TestRegisterBot:
 
 
 class TestSendToBot:
-    async def test_send_to_bot_text(self, bridge, mock_queue, mock_session_store):
-        mock_session_store.get_active_session.return_value = "session-id-1"
-
-        req_id = await bridge.send_to_bot("tok-1", "hello", msg_type="text")
+    async def test_send_to_bot_text(self, bridge, mock_queue):
+        req_id = await bridge.send_to_bot("tok-1", "hello", msg_type="text", session_id="session-id-1")
         assert req_id is not None
         assert req_id.startswith("req_")
-        # pending_requests stores (token, session_id)
         assert bridge._pending_requests[req_id] == ("tok-1", "session-id-1")
 
         mock_queue.publish.assert_awaited_once()
@@ -75,9 +72,7 @@ class TestSendToBot:
         assert len(content_items) == 1
         assert content_items[0] == {"type": "text", "text": "hello"}
 
-    async def test_send_to_bot_image(self, bridge, mock_queue, mock_session_store):
-        mock_session_store.get_active_session.return_value = "session-id-1"
-
+    async def test_send_to_bot_image(self, bridge, mock_queue):
         media = {
             "mediaId": "media_abc",
             "fileName": "photo.png",
@@ -85,7 +80,7 @@ class TestSendToBot:
             "fileSize": 1024,
             "downloadUrl": "/api/media/download/media_abc",
         }
-        req_id = await bridge.send_to_bot("tok-1", "my photo", msg_type="image", media=media)
+        req_id = await bridge.send_to_bot("tok-1", "my photo", msg_type="image", media=media, session_id="session-id-1")
         assert req_id is not None
 
         inbox_key, payload_str = mock_queue.publish.call_args[0]
@@ -97,17 +92,11 @@ class TestSendToBot:
         assert content_items[1]["type"] == "media"
         assert content_items[1]["media"]["mediaId"] == "media_abc"
 
-    async def test_send_to_bot_explicit_session_id(self, bridge, mock_queue, mock_session_store):
-        """When session_id is passed explicitly, get_active_session is NOT called."""
-        req_id = await bridge.send_to_bot("tok-1", "hello", session_id="explicit-sid")
-        assert req_id is not None
-        assert bridge._pending_requests[req_id] == ("tok-1", "explicit-sid")
-        # get_active_session should NOT have been called
-        mock_session_store.get_active_session.assert_not_awaited()
-        # RPC request should carry the explicit session_id
-        _, payload_str = mock_queue.publish.call_args[0]
-        data = json.loads(payload_str)
-        assert data["rpc_request"]["params"]["sessionId"] == "explicit-sid"
+    async def test_send_to_bot_requires_session_id(self, bridge, mock_queue):
+        """send_to_bot returns None when session_id is not provided."""
+        req_id = await bridge.send_to_bot("tok-1", "hello")
+        assert req_id is None
+        mock_queue.publish.assert_not_awaited()
 
 
 class TestHandleBotMessage:
@@ -218,7 +207,7 @@ class TestIsBotConnected:
         assert await bridge.is_bot_connected("tok-1") is False
 
 
-class TestSessionCreateSwitch:
+class TestSessionCreate:
     async def test_create_session(self, bridge, mock_session_store):
         mock_session_store.create_session.return_value = 1
         session_id, number = await bridge.create_session("tok-1")
@@ -226,29 +215,23 @@ class TestSessionCreateSwitch:
         assert session_id  # non-empty UUID string
         mock_session_store.create_session.assert_awaited_once_with("tok-1", session_id)
 
-    async def test_switch_session_success(self, bridge, mock_session_store):
-        mock_session_store.switch_session.return_value = True
-        assert await bridge.switch_session("tok-1", "some-session") is True
-        mock_session_store.switch_session.assert_awaited_once_with("tok-1", "some-session")
+    async def test_get_session_found(self, bridge, mock_session_store):
+        mock_session_store.get_session.return_value = ("sid-1", 1)
+        result = await bridge.get_session("tok-1", "sid-1")
+        assert result == ("sid-1", 1)
+        mock_session_store.get_session.assert_awaited_once_with("tok-1", "sid-1")
 
-    async def test_switch_session_failure(self, bridge, mock_session_store):
-        mock_session_store.switch_session.return_value = False
-        assert await bridge.switch_session("tok-1", "nonexistent") is False
+    async def test_get_session_not_found(self, bridge, mock_session_store):
+        mock_session_store.get_session.return_value = None
+        result = await bridge.get_session("tok-1", "nonexistent")
+        assert result is None
 
     async def test_get_sessions(self, bridge, mock_session_store):
-        mock_session_store.get_sessions.return_value = (
-            [("sid-1", 1), ("sid-2", 2)], "sid-2"
-        )
-        sessions, active = await bridge.get_sessions("tok-1")
+        mock_session_store.get_sessions.return_value = [("sid-1", 1), ("sid-2", 2)]
+        sessions = await bridge.get_sessions("tok-1")
         assert len(sessions) == 2
         assert sessions[0] == ("sid-1", 1)
-        assert active == "sid-2"
         mock_session_store.get_sessions.assert_awaited_once_with("tok-1")
-
-    async def test_get_active_session(self, bridge, mock_session_store):
-        mock_session_store.get_active_session.return_value = "sid-1"
-        result = await bridge.get_active_session("tok-1")
-        assert result == "sid-1"
 
     async def test_cleanup_old_sessions(self, bridge, mock_session_store):
         mock_session_store.cleanup_old_sessions.return_value = 5
@@ -260,11 +243,9 @@ class TestSessionCreateSwitch:
 # ── Cross-worker inbox tests ─────────────────────────────────────────────────
 
 class TestSendToBotRemote:
-    async def test_writes_to_bot_inbox_when_no_local_bot(self, bridge, mock_queue, mock_session_store):
+    async def test_writes_to_bot_inbox_when_no_local_bot(self, bridge, mock_queue):
         """When bot is not on this worker, message is pushed to bot_inbox:{token}."""
-        mock_session_store.get_active_session.return_value = "session-1"
-        # No bot registered locally → remote path
-        req_id = await bridge.send_to_bot("tok-1", "hello")
+        req_id = await bridge.send_to_bot("tok-1", "hello", session_id="session-1")
         assert req_id is not None
 
         mock_queue.publish.assert_awaited_once()
@@ -275,23 +256,14 @@ class TestSendToBotRemote:
         assert data["rpc_request"]["params"]["prompt"]["content"][0]["text"] == "hello"
 
 
-class TestBotStatusNotification:
-    async def test_notify_bot_connected_sends_to_active_session(self, bridge, mock_redis, mock_queue, mock_session_store):
-        """bot_status is sent to the current active session only."""
-        mock_redis.exists.return_value = 1  # SSE consumer active
-        mock_session_store.get_active_session.return_value = "session-active"
-        await bridge.notify_bot_connected("tok-1")
-        mock_queue.publish.assert_awaited_once()
-        inbox_key = mock_queue.publish.call_args[0][0]
-        assert inbox_key == "bridge:chat_inbox:tok-1:session-active"
-        payload = json.loads(mock_queue.publish.call_args[0][1])
-        assert payload == {"type": "bot_status", "connected": True}
+class TestBotStatusLogging:
+    def test_notify_bot_connected_is_sync(self, bridge):
+        """notify_bot_connected is now a sync log-only method."""
+        bridge.notify_bot_connected("tok-1")  # should not raise
 
-    async def test_notify_bot_disconnected_no_active_session(self, bridge, mock_queue, mock_session_store):
-        """No push when there is no active session."""
-        mock_session_store.get_active_session.return_value = None
-        await bridge.notify_bot_disconnected("tok-1")
-        mock_queue.publish.assert_not_awaited()
+    def test_notify_bot_disconnected_is_sync(self, bridge):
+        """notify_bot_disconnected is now a sync log-only method."""
+        bridge.notify_bot_disconnected("tok-1")  # should not raise
 
 
 class TestPollBotInbox:

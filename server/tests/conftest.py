@@ -80,9 +80,8 @@ def mock_session_store():
     """Return an ``AsyncMock`` SessionStore with sensible defaults."""
     store = AsyncMock()
     store.create_session = AsyncMock(return_value=1)
-    store.get_active_session = AsyncMock(return_value=None)
-    store.get_sessions = AsyncMock(return_value=([], ""))
-    store.switch_session = AsyncMock(return_value=True)
+    store.get_session = AsyncMock(return_value=None)
+    store.get_sessions = AsyncMock(return_value=[])
     store.remove_sessions = AsyncMock()
     store.cleanup_old_sessions = AsyncMock(return_value=0)
     return store

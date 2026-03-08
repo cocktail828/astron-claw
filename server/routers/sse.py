@@ -61,7 +61,7 @@ async def _resolve_session(
     """Resolve or auto-create a session.
 
     - If session_id is provided, validate it exists.
-    - If not provided, restore active session or create new.
+    - If not provided, create a new session.
 
     Returns (session_id, session_number).
     Raises ValueError with a message on failure.
@@ -69,19 +69,10 @@ async def _resolve_session(
     bridge = state.bridge
 
     if session_id:
-        sessions, _ = await bridge.get_sessions(token)
-        match = next((s for s in sessions if s[0] == session_id), None)
+        match = await bridge.get_session(token, session_id)
         if not match:
             raise ValueError(f"Session not found: {session_id}")
         return match[0], match[1]
-
-    # Try to restore active session
-    active = await bridge.get_active_session(token)
-    if active:
-        sessions, _ = await bridge.get_sessions(token)
-        match = next((s for s in sessions if s[0] == active), None)
-        if match:
-            return match[0], match[1]
 
     # Create new session
     return await bridge.create_session(token)
@@ -232,9 +223,6 @@ async def chat_sse(
             content={"ok": False, "error": str(e)},
         )
 
-    # Ensure this session is the active one (so bot responses route here)
-    await state.bridge.switch_session(token, session_id)
-
     # Clear stale events and reset consumer group for this SSE request
     queue = state.queue
     inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
@@ -285,12 +273,11 @@ async def list_sessions(
             content={"ok": False, "error": "Invalid or missing token"},
         )
 
-    sessions, active_id = await state.bridge.get_sessions(validated)
+    sessions = await state.bridge.get_sessions(validated)
 
     return {
         "ok": True,
         "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
-        "activeSessionId": active_id,
     }
 
 
@@ -310,12 +297,11 @@ async def create_session(
         )
 
     session_id, session_number = await state.bridge.create_session(validated)
-    sessions, active_id = await state.bridge.get_sessions(validated)
+    sessions = await state.bridge.get_sessions(validated)
 
     return {
         "ok": True,
         "sessionId": session_id,
         "sessionNumber": session_number,
         "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
-        "activeSessionId": active_id,
     }

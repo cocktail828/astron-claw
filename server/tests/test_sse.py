@@ -67,46 +67,27 @@ class TestAuthenticate:
 class TestResolveSession:
     async def test_explicit_session_found(self):
         with patch("routers.sse.state") as mock_state:
-            mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1), ("sid-2", 2)], "sid-1")
+            mock_state.bridge.get_session = AsyncMock(
+                return_value=("sid-2", 2)
             )
             sid, num = await _resolve_session("tok", "sid-2")
             assert sid == "sid-2"
             assert num == 2
+            mock_state.bridge.get_session.assert_awaited_once_with("tok", "sid-2")
 
     async def test_explicit_session_not_found(self):
         with patch("routers.sse.state") as mock_state:
-            mock_state.bridge.get_sessions = AsyncMock(return_value=([], ""))
+            mock_state.bridge.get_session = AsyncMock(return_value=None)
             with pytest.raises(ValueError, match="Session not found"):
                 await _resolve_session("tok", "nonexistent")
 
-    async def test_restore_active_session(self):
+    async def test_no_session_id_creates_new(self):
         with patch("routers.sse.state") as mock_state:
-            mock_state.bridge.get_active_session = AsyncMock(return_value="sid-1")
-            mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1)], "sid-1")
-            )
-            sid, num = await _resolve_session("tok", None)
-            assert sid == "sid-1"
-            assert num == 1
-
-    async def test_active_session_stale_creates_new(self):
-        """Active session ID exists in Redis but not in session list — create new."""
-        with patch("routers.sse.state") as mock_state:
-            mock_state.bridge.get_active_session = AsyncMock(return_value="stale-id")
-            mock_state.bridge.get_sessions = AsyncMock(return_value=([], ""))
             mock_state.bridge.create_session = AsyncMock(return_value=("new-id", 1))
             sid, num = await _resolve_session("tok", None)
             assert sid == "new-id"
+            assert num == 1
             mock_state.bridge.create_session.assert_awaited_once_with("tok")
-
-    async def test_no_active_creates_new(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.bridge.get_active_session = AsyncMock(return_value=None)
-            mock_state.bridge.create_session = AsyncMock(return_value=("new-id", 1))
-            sid, num = await _resolve_session("tok", None)
-            assert sid == "new-id"
-            assert num == 1
 
 
 # ── Endpoint integration (via FastAPI TestClient) ────────────────────────────
@@ -166,7 +147,7 @@ class TestChatSseEndpoint:
         with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_sessions = AsyncMock(return_value=([], ""))
+            mock_state.bridge.get_session = AsyncMock(return_value=None)
             from routers.sse import chat_sse, ChatRequest
             body = ChatRequest(content="hello", sessionId="nonexistent")
             resp = await chat_sse(body, authorization="Bearer sk-valid")
@@ -177,10 +158,7 @@ class TestChatSseEndpoint:
         with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1)], "sid-1")
-            )
-            mock_state.bridge.switch_session = AsyncMock(return_value=True)
+            mock_state.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
             mock_state.bridge.send_to_bot = AsyncMock(return_value=None)
             mock_queue = AsyncMock()
             mock_state.queue = mock_queue
@@ -194,10 +172,7 @@ class TestChatSseEndpoint:
         with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1)], "sid-1")
-            )
-            mock_state.bridge.switch_session = AsyncMock(return_value=True)
+            mock_state.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
             mock_state.bridge.send_to_bot = AsyncMock(return_value="req_abc")
             mock_queue = AsyncMock()
             mock_state.queue = mock_queue
@@ -212,10 +187,7 @@ class TestChatSseEndpoint:
         with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1)], "sid-1")
-            )
-            mock_state.bridge.switch_session = AsyncMock(return_value=True)
+            mock_state.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
             mock_state.bridge.send_to_bot = AsyncMock(return_value="req_abc")
             mock_queue = AsyncMock()
             mock_state.queue = mock_queue
@@ -240,13 +212,13 @@ class TestListSessionsEndpoint:
         with patch("routers.sse.state") as mock_state:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1), ("sid-2", 2)], "sid-2")
+                return_value=[("sid-1", 1), ("sid-2", 2)]
             )
             from routers.sse import list_sessions
             resp = await list_sessions(authorization="Bearer sk-valid")
             assert resp["ok"] is True
             assert len(resp["sessions"]) == 2
-            assert resp["activeSessionId"] == "sid-2"
+            assert "activeSessionId" not in resp
 
 
 class TestCreateSessionEndpoint:
@@ -262,7 +234,7 @@ class TestCreateSessionEndpoint:
             mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.create_session = AsyncMock(return_value=("sid-new", 3))
             mock_state.bridge.get_sessions = AsyncMock(
-                return_value=([("sid-1", 1), ("sid-new", 3)], "sid-new")
+                return_value=[("sid-1", 1), ("sid-new", 3)]
             )
             from routers.sse import create_session
             resp = await create_session(authorization="Bearer sk-valid")
@@ -270,3 +242,4 @@ class TestCreateSessionEndpoint:
             assert resp["sessionId"] == "sid-new"
             assert resp["sessionNumber"] == 3
             assert len(resp["sessions"]) == 2
+            assert "activeSessionId" not in resp
