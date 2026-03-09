@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 
 import { SILENT_REPLY_TOKEN, isSilentReplyText, loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
 
 import { PLUGIN_ID } from "../constants.js";
 import { getRuntime, logger, activeSessionCtx, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
 import { inferMediaType } from "../bridge/media.js";
+import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
 import type { BridgeClient } from "../bridge/client.js";
 import type { ResolvedAccount } from "../types.js";
 
@@ -87,6 +87,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const mediaPaths: string[] = [];
   const mediaTypes: string[] = [];
   const placeholders: string[] = [];
+  const mediaDir = mediaItems.length > 0 ? await ensureInboundMediaDir() : "";
   for (const item of mediaItems) {
     const mediaInfo = item.media;
     const downloadUrl = mediaInfo?.downloadUrl;
@@ -103,11 +104,11 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       const contentType = loaded.contentType ?? mediaInfo.mimeType ?? "application/octet-stream";
       const fileName = loaded.fileName ?? mediaInfo.fileName ?? "file";
 
-      // Save buffer to a temp file (SDK convention: MediaPath = local file path)
+      // Save buffer to SDK convention path: ~/.openclaw/media/inbound/{name}---{uuid}{ext}
       const ext = extensionForMime(contentType) || ".bin";
-      const mediaDir = join(tmpdir(), "astron-claw-media");
-      await mkdir(mediaDir, { recursive: true });
-      const savedPath = join(mediaDir, `${randomUUID()}${ext}`);
+      const uuid = randomUUID();
+      const savedName = buildMediaFileName(fileName, uuid, ext);
+      const savedPath = join(mediaDir, savedName);
       await writeFile(savedPath, loaded.buffer);
 
       mediaPaths.push(savedPath);

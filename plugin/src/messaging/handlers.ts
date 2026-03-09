@@ -1,12 +1,16 @@
-import { loadWebMedia, saveMediaBuffer } from "openclaw/plugin-sdk";
+import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
 
 import { logger } from "../runtime.js";
-import { inferMediaType } from "../bridge/media.js";
-import type { ResolvedAccount, MessageHandler, HandleResult, MediaItem } from "../types.js";
+import type { MessageHandler, MediaItem } from "../types.js";
+import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
 
 // ---------------------------------------------------------------------------
 // Common media download + save logic (deduplicates image/audio/video/file)
-// Uses loadWebMedia (S3 public URL) + saveMediaBuffer (SDK managed storage)
+// Uses loadWebMedia (S3 public URL) + local writeFile to SDK convention path
 // ---------------------------------------------------------------------------
 async function downloadAndSaveMedia(
   downloadUrl: string,
@@ -21,9 +25,14 @@ async function downloadAndSaveMedia(
   const contentType = loaded.contentType ?? "application/octet-stream";
   const fileName = fileNameOverride ?? loaded.fileName ?? "file";
 
-  const saved = await saveMediaBuffer(loaded.buffer, { contentType, fileName });
+  const ext = extensionForMime(contentType) || ".bin";
+  const mediaDir = await ensureInboundMediaDir();
+  const uuid = randomUUID();
+  const savedName = buildMediaFileName(fileName, uuid, ext);
+  const savedPath = join(mediaDir, savedName);
+  await writeFile(savedPath, loaded.buffer);
 
-  return { savedPath: saved.path, buffer: loaded.buffer, contentType, fileName };
+  return { savedPath, buffer: loaded.buffer, contentType, fileName };
 }
 
 // ---------------------------------------------------------------------------
