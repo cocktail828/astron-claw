@@ -1,7 +1,7 @@
 import { loadWebMedia } from "openclaw/plugin-sdk";
 
 import { logger, recordChannelRuntimeState } from "../runtime.js";
-import { uploadMediaToBridge, inferMediaType } from "../bridge/media.js";
+import { uploadMediaToBridge, inferMediaType, type UploadResult } from "../bridge/media.js";
 import { normalizeTarget } from "./target.js";
 import type { BridgeClient } from "../bridge/client.js";
 import type { ResolvedAccount } from "../types.js";
@@ -43,7 +43,7 @@ export async function sendTextMessage(
 export async function sendMediaMessage(
   to: string,
   mediaUrl: string,
-  options: { text?: string; mimeType?: string; fileName?: string } | undefined,
+  options: { text?: string; mimeType?: string; fileName?: string; sessionId?: string } | undefined,
   { account, bridgeClient }: { account: ResolvedAccount; bridgeClient: BridgeClient },
 ): Promise<void> {
   if (!bridgeClient?.isReady()) {
@@ -61,10 +61,13 @@ export async function sendMediaMessage(
 
   const mediaType = inferMediaType(contentType);
 
+  // sessionId: prefer explicit option, fall back to target (which is the session)
+  const sessionId = options?.sessionId ?? target;
+
   // Upload to bridge server
-  let uploadResult: any;
+  let uploadResult: UploadResult;
   try {
-    uploadResult = await uploadMediaToBridge(account, buffer, fileName, contentType);
+    uploadResult = await uploadMediaToBridge(account, buffer, fileName, contentType, sessionId);
   } catch (err) {
     // Fallback: send text with media URL
     logger.warn(`Media upload failed, sending as link: ${String(err)}`);
@@ -75,18 +78,21 @@ export async function sendMediaMessage(
     return;
   }
 
-  // Send as JSON-RPC notification with media info
+  // Send as JSON-RPC notification with media info.
+  // sessionId for routing = target (normalizeTarget extracts sessionId from address).
+  // This also matches the S3 storage path prefix — both are the session UUID.
   bridgeClient.send({
     jsonrpc: "2.0",
     method: "session/update",
     params: {
+      sessionId: target,
       update: {
         sessionUpdate: "agent_media",
         content: {
           msgType: mediaType,
           text: options?.text ?? "",
           media: {
-            mediaId: uploadResult.mediaId ?? uploadResult.media_id,
+            downloadUrl: uploadResult.downloadUrl,
             fileName,
             mimeType: contentType,
             fileSize: buffer.length,

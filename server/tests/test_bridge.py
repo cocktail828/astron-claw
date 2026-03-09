@@ -74,11 +74,10 @@ class TestSendToBot:
 
     async def test_send_to_bot_image(self, bridge, mock_queue):
         media = {
-            "mediaId": "media_abc",
             "fileName": "photo.png",
             "mimeType": "image/png",
             "fileSize": 1024,
-            "downloadUrl": "/api/media/download/media_abc",
+            "downloadUrl": "http://localhost:9000/astron-claw-media/sid/photo.png",
         }
         req_id = await bridge.send_to_bot("tok-1", "my photo", msg_type="image", media=media, session_id="session-id-1")
         assert req_id is not None
@@ -90,7 +89,7 @@ class TestSendToBot:
         assert len(content_items) == 2
         assert content_items[0]["type"] == "text"
         assert content_items[1]["type"] == "media"
-        assert content_items[1]["media"]["mediaId"] == "media_abc"
+        assert content_items[1]["media"]["downloadUrl"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
 
     async def test_send_to_bot_requires_session_id(self, bridge, mock_queue):
         """send_to_bot returns None when session_id is not provided."""

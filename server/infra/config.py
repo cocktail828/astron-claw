@@ -53,11 +53,22 @@ class QueueConfig:
 
 
 @dataclass(frozen=True)
+class S3Config:
+    endpoint: str
+    public_endpoint: str
+    access_key: str
+    secret_key: str
+    bucket: str
+    region: str = "us-east-1"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     mysql: MysqlConfig
     redis: RedisConfig
     server: ServerConfig
     queue: QueueConfig
+    s3: S3Config
 
 
 def load_config() -> AppConfig:
@@ -87,5 +98,12 @@ def load_config() -> AppConfig:
             type=os.getenv("QUEUE_TYPE", "redis_stream"),
             max_stream_len=int(os.getenv("QUEUE_MAX_STREAM_LEN", "1000")),
             block_ms=int(os.getenv("QUEUE_BLOCK_MS", "5000")),
+        ),
+        s3=S3Config(
+            endpoint=os.getenv("S3_ENDPOINT", "http://localhost:9000"),
+            public_endpoint=os.getenv("S3_PUBLIC_ENDPOINT") or os.getenv("S3_ENDPOINT", "http://localhost:9000"),
+            access_key=os.getenv("S3_ACCESS_KEY", "minioadmin"),
+            secret_key=os.getenv("S3_SECRET_KEY", "minioadmin"),
+            bucket=os.getenv("S3_BUCKET", "astron-claw-media"),
         ),
     )

@@ -1,4 +1,4 @@
-from sqlalchemy import String, Text, Double, BigInteger, Integer, Index
+from sqlalchemy import String, Text, Double, Integer, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -58,51 +58,6 @@ class AdminConfig(Base):
     value: Mapped[str] = mapped_column(
         Text, nullable=False,
         comment="配置值，存储对应键的具体内容",
-    )
-
-
-class Media(Base):
-    """媒体文件元数据"""
-
-    __tablename__ = "media"
-    __table_args__ = (
-        Index("idx_media_expires_at", "expires_at"),
-        Index("idx_media_uploaded_by", "uploaded_by"),
-        Index("uk_media_media_id", "media_id", unique=True),
-        {"comment": "媒体文件元数据表，记录上传文件的信息，实际文件存储在本地文件系统"},
-    )
-
-    id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, autoincrement=True,
-        comment="自增主键",
-    )
-    media_id: Mapped[str] = mapped_column(
-        String(64), nullable=False,
-        comment="媒体文件唯一标识，media_ 前缀 + UUID hex",
-    )
-    file_name: Mapped[str] = mapped_column(
-        String(255), nullable=False,
-        comment="原始文件名（已做路径遍历安全处理）",
-    )
-    mime_type: Mapped[str] = mapped_column(
-        String(128), nullable=False,
-        comment="MIME 类型，如 image/png、application/pdf",
-    )
-    file_size: Mapped[int] = mapped_column(
-        BigInteger, nullable=False,
-        comment="文件大小（字节），最大 50MB",
-    )
-    uploaded_by: Mapped[str] = mapped_column(
-        String(64), nullable=False,
-        comment="上传者的令牌值，关联 tokens.token",
-    )
-    uploaded_at: Mapped[float] = mapped_column(
-        Double, nullable=False,
-        comment="上传时间，Unix 时间戳（秒）",
-    )
-    expires_at: Mapped[float] = mapped_column(
-        Double, nullable=False,
-        comment="过期时间，Unix 时间戳（秒），默认上传后 7 天",
     )
 
 

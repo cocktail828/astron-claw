@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { SILENT_REPLY_TOKEN, isSilentReplyText } from "openclaw/plugin-sdk";
+import { SILENT_REPLY_TOKEN, isSilentReplyText, loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
 
 import { PLUGIN_ID } from "../constants.js";
 import { getRuntime, logger, activeSessionCtx, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
-import { downloadMediaFromBridge } from "../bridge/media.js";
+import { inferMediaType } from "../bridge/media.js";
 import type { BridgeClient } from "../bridge/client.js";
 import type { ResolvedAccount } from "../types.js";
 
@@ -83,28 +83,46 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     return;
   }
 
-  // Download media from bridge and save locally
-  let mediaPath: string | null = null;
-  let mediaType: string | null = null;
-  let mediaUrl: string | null = null;
-  if (mediaItems.length > 0) {
-    const firstMedia = mediaItems[0];
-    const mediaInfo = firstMedia.media;
-    const mediaId = mediaInfo.mediaId;
-    if (mediaId) {
-      try {
-        const { buffer, contentType: ct, fileName } = await downloadMediaFromBridge(account, mediaId);
-        const dir = join(tmpdir(), "astron-claw-media");
-        mkdirSync(dir, { recursive: true });
-        const savedPath = join(dir, `${randomUUID()}_${fileName}`);
-        writeFileSync(savedPath, buffer);
-        mediaPath = savedPath;
-        mediaType = ct;
-        mediaUrl = savedPath;
-        logger.info(`Downloaded media ${mediaId} -> ${savedPath} (${ct})`);
-      } catch (err) {
-        logger.error(`Failed to download media ${mediaId}: ${String(err)}`);
-      }
+  // Download media from S3 (public URL) and save locally via SDK
+  const mediaPaths: string[] = [];
+  const mediaTypes: string[] = [];
+  const placeholders: string[] = [];
+  for (const item of mediaItems) {
+    const mediaInfo = item.media;
+    const downloadUrl = mediaInfo?.downloadUrl;
+    if (!downloadUrl) continue;
+
+    // Guard: only accept HTTP URLs (loadWebMedia has localRoots whitelist for local paths)
+    if (!downloadUrl.startsWith("http")) {
+      logger.error(`Invalid downloadUrl (expected HTTP URL): ${downloadUrl}`);
+      continue;
+    }
+
+    try {
+      const loaded = await loadWebMedia(downloadUrl);
+      const contentType = loaded.contentType ?? mediaInfo.mimeType ?? "application/octet-stream";
+      const fileName = loaded.fileName ?? mediaInfo.fileName ?? "file";
+
+      // Save buffer to a temp file (SDK convention: MediaPath = local file path)
+      const ext = extensionForMime(contentType) || ".bin";
+      const mediaDir = join(tmpdir(), "astron-claw-media");
+      await mkdir(mediaDir, { recursive: true });
+      const savedPath = join(mediaDir, `${randomUUID()}${ext}`);
+      await writeFile(savedPath, loaded.buffer);
+
+      mediaPaths.push(savedPath);
+      mediaTypes.push(contentType);
+
+      // Semantic placeholder based on media type
+      const type = inferMediaType(contentType);
+      if (type === "image") placeholders.push("<media:image>");
+      else if (type === "audio") placeholders.push("<media:audio>");
+      else if (type === "video") placeholders.push("<media:video>");
+      else placeholders.push(`<media:file name="${fileName}">`);
+
+      logger.info(`Downloaded media ${downloadUrl} -> ${savedPath} (${contentType})`);
+    } catch (err) {
+      logger.error(`Failed to download media ${downloadUrl}: ${String(err)}`);
     }
   }
 
@@ -114,14 +132,15 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const toAddress = `${PLUGIN_ID}:user:${senderId}`;
   const peerId = senderId;
 
-  // For media-only messages, use a placeholder text so the message isn't dropped
-  const effectiveText = messageText || (mediaPath ? "[Image]" : "");
+  // For media-only messages, use semantic placeholder so the message isn't dropped
+  const mediaPlaceholder = placeholders.length > 0 ? placeholders.join(" ") : "";
+  const effectiveText = messageText || mediaPlaceholder;
   if (!effectiveText) {
     logger.warn("Empty prompt received (no text, no media), ignoring");
     return;
   }
 
-  logger.info(`Inbound prompt from session ${sessionId}: ${effectiveText.slice(0, 100)}${mediaPath ? " [+media]" : ""}`);
+  logger.info(`Inbound prompt from session ${sessionId}: ${effectiveText.slice(0, 100)}${mediaPaths.length > 0 ? " [+media]" : ""}`);
   recordChannelRuntimeState(account.accountId, { lastInboundAt: Date.now() });
 
   // Resolve route via runtime SDK (same as DingTalk)
@@ -179,10 +198,14 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     OriginatingChannel: PLUGIN_ID,
     OriginatingTo: toAddress,
     CommandAuthorized: true,
-    // Media fields (same as Matrix/Zalo pattern)
-    MediaPath: mediaPath ?? undefined,
-    MediaType: mediaType ?? undefined,
-    MediaUrl: mediaUrl ?? undefined,
+    // Media fields (supports multi-media via MediaPaths array)
+    // SDK convention: MediaUrl/MediaUrls are "pseudo-URLs" — local file paths
+    // identical to MediaPath/MediaPaths (see Discord, Telegram, Slack channels).
+    MediaPath: mediaPaths[0] ?? undefined,
+    MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
+    MediaType: mediaTypes[0] ?? undefined,
+    MediaUrl: mediaPaths[0] ?? undefined,
+    MediaUrls: mediaPaths.length > 0 ? mediaPaths : undefined,
   };
 
   // Token-level streaming state (following adp-openclaw pattern)
@@ -234,7 +257,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       const kind = info?.kind;
       const text = payload?.text ?? "";
 
-      logger.info(`deliver called: kind=${kind}, info=${JSON.stringify(info)}, payload_keys=${Object.keys(payload || {})}, text_len=${text.length}, text_preview=${text.slice(0, 200)}`);
+      logger.debug(`deliver: kind=${kind}, text_len=${text.length}`);
 
       try {
         if (kind === "block") {

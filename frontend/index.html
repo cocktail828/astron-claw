@@ -2172,7 +2172,8 @@ function getHttpBaseUrl() {
 }
 
 function getMediaUrl(downloadUrl) {
-  return getHttpBaseUrl() + downloadUrl + '?token=' + encodeURIComponent(token);
+  // downloadUrl is a full S3 public URL — use directly
+  return downloadUrl;
 }
 
 function formatFileSize(bytes) {
@@ -2269,6 +2270,9 @@ async function uploadFile(file) {
   const base = getHttpBaseUrl();
   const formData = new FormData();
   formData.append('file', file);
+  if (currentSessionId) {
+    formData.append('sessionId', currentSessionId);
+  }
 
   const resp = await fetch(base + '/api/media/upload', {
     method: 'POST',
@@ -2369,7 +2373,6 @@ function sendMessage() {
 
     uploadFile(file).then(function(result) {
       sseSendMessage(caption, msgType, {
-        mediaId: result.mediaId,
         fileName: result.fileName,
         mimeType: result.mimeType,
         fileSize: result.fileSize,

@@ -55,8 +55,6 @@ class ConnectionBridge:
         self._bots: dict[str, WebSocket] = {}
         # request_id -> (token, session_id) for targeted response routing
         self._pending_requests: dict[str, tuple[str, str]] = {}
-        # media manager reference
-        self._media_manager = None
         # Redis client for cross-worker state
         self._redis = redis
         # Session persistence layer (MySQL + Redis cache)
@@ -122,10 +120,6 @@ class ConnectionBridge:
             batch.append(key)
         if batch:
             await self._redis.delete(*batch)
-
-    def set_media_manager(self, media_manager) -> None:
-        """Set the media manager for resolving download URLs in messages."""
-        self._media_manager = media_manager
 
     # ── Bot registration (multi-worker safe) ─────────────────────────────────
 
@@ -260,7 +254,6 @@ class ConnectionBridge:
             media_info = {}
             if media:
                 media_info = {
-                    "mediaId": media.get("mediaId", ""),
                     "fileName": media.get("fileName", ""),
                     "mimeType": media.get("mimeType", ""),
                     "fileSize": media.get("fileSize", 0),
@@ -492,11 +485,10 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
                 "msgType": content.get("msgType", "file"),
                 "content": content.get("text", ""),
                 "media": {
-                    "mediaId": media.get("mediaId", ""),
                     "fileName": media.get("fileName", ""),
                     "mimeType": media.get("mimeType", ""),
                     "fileSize": media.get("fileSize", 0),
-                    "downloadUrl": f"/api/media/download/{media.get('mediaId', '')}",
+                    "downloadUrl": media.get("downloadUrl", ""),
                 },
             }
 

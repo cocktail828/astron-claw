@@ -166,18 +166,18 @@ async def main():
             "image/png",
             token3,
         )
-        media_id = result.get("mediaId", "")
+        download_url = result.get("downloadUrl", "")
         report(
             "Media upload succeeds",
-            media_id.startswith("media_")
-            and result.get("fileName") == "test_image.png"
+            result.get("fileName") == "test_image.png"
             and result.get("mimeType") == "image/png"
             and result.get("fileSize") == len(test_image_data)
-            and "downloadUrl" in result,
-            f"mediaId={media_id[:20]}..., size={result.get('fileSize')}"
+            and download_url.startswith("http")
+            and "sessionId" in result,
+            f"downloadUrl={download_url[:60]}..., size={result.get('fileSize')}"
         )
     except Exception as e:
-        media_id = ""
+        download_url = ""
         report("Media upload succeeds", False, str(e)[:80])
 
     # Test upload with invalid token
@@ -195,58 +195,22 @@ async def main():
     except Exception as e:
         report("Media upload rejects bad token", False, str(e)[:80])
 
-    # ── 6. Media Download API ──
-    print("\n6. Media Download API")
+    # ── 6. Media Download (S3 public URL) ──
+    print("\n6. Media Download (S3 public URL)")
 
-    if media_id:
-        # Download with valid token via query param
+    if download_url:
+        # Download from S3 public URL directly (no auth needed)
         try:
-            download_url = f"{SERVER}/api/media/download/{media_id}?token={token3}"
             data, headers = http_get(download_url)
             report(
-                "Media download succeeds (query param)",
+                "Media download from S3 public URL",
                 len(data) == len(test_image_data),
                 f"downloaded {len(data)} bytes, content-type={headers.get('content-type', '')}"
             )
         except Exception as e:
-            report("Media download succeeds (query param)", False, str(e)[:80])
-
-        # Download with valid token via header
-        try:
-            download_url = f"{SERVER}/api/media/download/{media_id}"
-            data, headers = http_get(download_url, {"Authorization": f"Bearer {token3}"})
-            report(
-                "Media download succeeds (auth header)",
-                len(data) == len(test_image_data),
-                f"downloaded {len(data)} bytes"
-            )
-        except Exception as e:
-            report("Media download succeeds (auth header)", False, str(e)[:80])
-
-        # Download with invalid token
-        try:
-            download_url = f"{SERVER}/api/media/download/{media_id}?token=sk-bad"
-            http_get(download_url)
-            report("Media download rejects bad token", False, "should have failed")
-        except urllib.error.HTTPError as e:
-            report("Media download rejects bad token", e.code == 401, f"status={e.code}")
-        except Exception as e:
-            report("Media download rejects bad token", False, str(e)[:80])
-
-        # Download non-existent media
-        try:
-            download_url = f"{SERVER}/api/media/download/media_nonexistent?token={token3}"
-            http_get(download_url)
-            report("Media download 404 for missing ID", False, "should have failed")
-        except urllib.error.HTTPError as e:
-            report("Media download 404 for missing ID", e.code == 404, f"status={e.code}")
-        except Exception as e:
-            report("Media download 404 for missing ID", False, str(e)[:80])
+            report("Media download from S3 public URL", False, str(e)[:80])
     else:
-        report("Media download succeeds (query param)", False, "skipped - no media_id")
-        report("Media download succeeds (auth header)", False, "skipped - no media_id")
-        report("Media download rejects bad token", False, "skipped - no media_id")
-        report("Media download 404 for missing ID", False, "skipped - no media_id")
+        report("Media download from S3 public URL", False, "skipped - no downloadUrl")
 
     # ── 7. Upload Validation ──
     print("\n7. Upload Validation")
@@ -279,9 +243,9 @@ async def main():
         )
         report(
             "PDF upload succeeds",
-            result.get("mediaId", "").startswith("media_")
+            result.get("downloadUrl", "").startswith("http")
             and result.get("mimeType") == "application/pdf",
-            f"mediaId={result.get('mediaId', '')[:20]}..."
+            f"downloadUrl={result.get('downloadUrl', '')[:60]}..."
         )
     except Exception as e:
         report("PDF upload succeeds", False, str(e)[:80])

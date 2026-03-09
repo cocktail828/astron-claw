@@ -1,17 +1,11 @@
-import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import BinaryIO
 
-from sqlalchemy import select, delete
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-from infra.models import Media
 from infra.log import logger
+from infra.s3 import S3Storage
 
-DEFAULT_MEDIA_DIR = Path(__file__).resolve().parent.parent / "media"
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
-MEDIA_EXPIRY_SECONDS = 7 * 24 * 3600  # 7 days
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 
 ALLOWED_MIME_PREFIXES = (
     "image/",
@@ -25,25 +19,25 @@ ALLOWED_MIME_PREFIXES = (
 
 
 class MediaManager:
-    """Manages file upload, download, and metadata storage for media."""
+    """Manages file upload to S3 object storage."""
 
-    def __init__(
-        self,
-        session_factory: async_sessionmaker[AsyncSession],
-        media_dir: Path = DEFAULT_MEDIA_DIR,
-    ):
-        self._session = session_factory
-        self._media_dir = media_dir
-        self._media_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, s3: S3Storage):
+        self._s3 = s3
 
     async def store(
         self,
-        file_data: bytes,
+        file_obj: BinaryIO,
         file_name: str,
+        file_size: int,
         mime_type: str,
-        uploaded_by: str,
-    ) -> Optional[dict]:
-        file_size = len(file_data)
+        session_id: str | None = None,
+    ) -> dict | None:
+        """Upload a file to S3.
+
+        ``file_obj`` is a seekable file-like object (e.g. ``SpooledTemporaryFile``
+        from FastAPI ``UploadFile.file``).  The caller is responsible for
+        seeking to the start before calling this method.
+        """
         if file_size > MAX_FILE_SIZE:
             logger.warning("Media rejected: file too large ({} bytes, max={})", file_size, MAX_FILE_SIZE)
             return None
@@ -54,104 +48,30 @@ class MediaManager:
             logger.warning("Media rejected: unsupported MIME type '{}' (name={})", mime_type, file_name)
             return None
 
-        media_id = f"media_{uuid.uuid4().hex}"
-        now = time.time()
-        expires_at = now + MEDIA_EXPIRY_SECONDS
-
+        # Sanitize filename (prevent path traversal and bare dot-segments)
         safe_name = Path(file_name).name
-        if not safe_name:
+        if not safe_name or safe_name.startswith("."):
             safe_name = "unnamed"
 
-        ext = Path(safe_name).suffix
-        stored_name = media_id + ext
-        file_path = self._media_dir / stored_name
-        file_path.write_bytes(file_data)
+        # Use provided sessionId or generate a random UUID
+        sid = session_id or uuid.uuid4().hex
+        # S3 key uses the raw filename; URL encoding is handled by S3Storage
+        # when constructing the public download URL.
+        key = f"{sid}/{safe_name}"
 
-        async with self._session() as session:
-            session.add(Media(
-                media_id=media_id,
-                file_name=safe_name,
-                mime_type=mime_type,
-                file_size=file_size,
-                uploaded_by=uploaded_by,
-                uploaded_at=now,
-                expires_at=expires_at,
-            ))
-            await session.commit()
+        download_url = await self._s3.put_object(key, file_obj, mime_type, file_size)
 
         logger.info(
-            "Stored media {} ({}, {} bytes) by {}...",
-            media_id, mime_type, file_size, uploaded_by[:10],
+            "Stored media s3://{}/{} ({}, {} bytes)",
+            self._s3.bucket, key, mime_type, file_size,
         )
         return {
-            "mediaId": media_id,
             "fileName": safe_name,
             "mimeType": mime_type,
             "fileSize": file_size,
+            "sessionId": sid,
+            "downloadUrl": download_url,
         }
-
-    async def get_metadata(self, media_id: str) -> Optional[dict]:
-        async with self._session() as session:
-            result = await session.execute(
-                select(Media).where(
-                    Media.media_id == media_id,
-                    Media.expires_at >= time.time(),
-                )
-            )
-            row = result.scalar_one_or_none()
-
-        if not row:
-            return None
-        return {
-            "mediaId": row.media_id,
-            "fileName": row.file_name,
-            "mimeType": row.mime_type,
-            "fileSize": row.file_size,
-            "uploadedBy": row.uploaded_by,
-            "uploadedAt": row.uploaded_at,
-            "expiresAt": row.expires_at,
-        }
-
-    async def get_file_path(self, media_id: str) -> Optional[Path]:
-        meta = await self.get_metadata(media_id)
-        if not meta:
-            return None
-        ext = Path(meta["fileName"]).suffix
-        stored_name = media_id + ext
-        file_path = self._media_dir / stored_name
-        if not file_path.is_file():
-            logger.error("Media file missing on disk: {} (path={})", media_id, file_path)
-            return None
-        return file_path
-
-    async def cleanup_expired(self) -> int:
-        now = time.time()
-        async with self._session() as session:
-            result = await session.execute(
-                select(Media.media_id, Media.file_name).where(Media.expires_at < now)
-            )
-            rows = result.all()
-
-            count = 0
-            for media_id, file_name in rows:
-                ext = Path(file_name).suffix
-                stored_name = media_id + ext
-                file_path = self._media_dir / stored_name
-                try:
-                    if file_path.is_file():
-                        file_path.unlink()
-                except OSError:
-                    logger.warning("Failed to delete media file: {}", file_path)
-                count += 1
-
-            if rows:
-                await session.execute(
-                    delete(Media).where(Media.expires_at < now)
-                )
-                await session.commit()
-                logger.info("Cleaned up {} expired media files", count)
-
-        return count
 
     def _is_mime_allowed(self, mime_type: str) -> bool:
         if not mime_type:

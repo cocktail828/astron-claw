@@ -15,6 +15,7 @@ dependencies = [
     "loguru",
     "uvloop",
     "httptools",
+    "aiobotocore",
 ]
 
 [dependency-groups]
