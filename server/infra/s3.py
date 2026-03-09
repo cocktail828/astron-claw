@@ -64,12 +64,13 @@ class S3Storage:
     # ── Bucket setup ──────────────────────────────────────────────────────────
 
     async def ensure_bucket(self) -> None:
-        """Create bucket if not exists, then ensure public-read policy and lifecycle."""
+        """Create bucket if not exists; only configure policy and lifecycle for newly created buckets."""
         client = self._get_client()
 
         try:
             await client.head_bucket(Bucket=self._config.bucket)
-            logger.info("S3 bucket '{}' already exists", self._config.bucket)
+            logger.info("S3 bucket '{}' already exists, skipping policy/lifecycle setup", self._config.bucket)
+            return
         except ClientError as e:
             error_code = int(e.response.get("Error", {}).get("Code", 0))
             if error_code == 404:
@@ -78,7 +79,8 @@ class S3Storage:
             else:
                 raise
 
-        # Always ensure public-read policy and lifecycle (idempotent)
+        # Only configure policy and lifecycle for newly created buckets
+        # to avoid overwriting production settings on every restart
         policy = {
             "Version": "2012-10-17",
             "Statement": [{

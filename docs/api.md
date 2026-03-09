@@ -27,7 +27,6 @@ http://127.0.0.1:8765
 | Token 接口 (`/api/token/*`) | 无需认证 |
 | Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
 | 媒体上传 (`POST /api/media/upload`) | `Authorization: Bearer <token>`（仅 Header） |
-| 媒体下载 (`GET /api/media/download/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
 | HTTP SSE (`/bridge/chat`, `/bridge/chat/sessions`) | `Authorization: Bearer <token>` |
 | WebSocket `/bridge/bot` | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
 
@@ -64,7 +63,6 @@ http://127.0.0.1:8765
   - [5.5 接入示例](#55-接入示例)
 - [6. Media 接口](#6-media-接口)
   - [6.1 上传媒体文件](#61-上传媒体文件)
-  - [6.2 下载媒体文件](#62-下载媒体文件)
 - [7. 健康检查接口](#7-健康检查接口)
 
 ---
@@ -672,7 +670,7 @@ POST /bridge/chat
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `content` | string | 是 | 消息文本（文本类型时不能为空） |
-| `sessionId` | string | 否 | 会话 ID。不传则自动恢复活跃会话或创建新会话 |
+| `sessionId` | string | 否 | 会话 ID。不传则自动创建新会话 |
 | `msgType` | string | 否 | 消息类型，默认 `"text"`。支持 `"image"` / `"file"` / `"audio"` / `"video"` |
 | `media` | object | 条件 | 媒体信息（`msgType` 非 text 时必填） |
 
@@ -683,7 +681,7 @@ POST /bridge/chat
 ```
 
 ```json
-{"content": "", "sessionId": "550e8400-...", "msgType": "image", "media": {"mediaId": "abc123", "fileName": "photo.jpg", "mimeType": "image/jpeg", "fileSize": 102400}}
+{"content": "", "sessionId": "550e8400-...", "msgType": "image", "media": {"fileName": "photo.jpg", "mimeType": "image/jpeg", "fileSize": 102400, "downloadUrl": "http://host:9000/astron-claw-media/sid/photo.jpg"}}
 ```
 
 **响应：** `Content-Type: text/event-stream`
@@ -721,7 +719,6 @@ GET /bridge/chat/sessions
 |------|------|------|
 | `ok` | boolean | `true` |
 | `sessions` | array | 会话列表 `[{id, number}, ...]` |
-| `activeSessionId` | string | 当前活跃会话 ID |
 
 **响应示例：**
 
@@ -731,8 +728,7 @@ GET /bridge/chat/sessions
   "sessions": [
     {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
     {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2}
-  ],
-  "activeSessionId": "660e8400-e29b-41d4-a716-446655440001"
+  ]
 }
 ```
 
@@ -754,7 +750,6 @@ POST /bridge/chat/sessions
 | `sessionId` | string | 新建会话 ID |
 | `sessionNumber` | integer | 新建会话编号 |
 | `sessions` | array | 更新后的所有会话列表 |
-| `activeSessionId` | string | 活跃会话 ID |
 
 **响应示例：**
 
@@ -767,8 +762,7 @@ POST /bridge/chat/sessions
     {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
     {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2},
     {"id": "770e8400-e29b-41d4-a716-446655440002", "number": 3}
-  ],
-  "activeSessionId": "770e8400-e29b-41d4-a716-446655440002"
+  ]
 }
 ```
 
@@ -1061,11 +1055,10 @@ Token 支持两种传递方式（二选一）：
           "type": "media",
           "msgType": "image",
           "media": {
-            "mediaId": "abc123",
             "fileName": "photo.jpg",
             "mimeType": "image/jpeg",
             "fileSize": 102400,
-            "downloadUrl": "/api/media/download/abc123"
+            "downloadUrl": "http://host:9000/astron-claw-media/sid/photo.jpg"
           }
         }
       ]
@@ -1255,11 +1248,11 @@ asyncio.run(bot("sk-your-token-here"))
 
 ## 6. Media 接口
 
-媒体文件上传和下载接口。所有媒体接口需通过 `Authorization: Bearer <token>` 或 Query 参数 `token` 进行认证。
+媒体文件通过 S3/MinIO 对象存储管理。上传后返回 S3 公网下载 URL，可直接用于在消息中引用。
 
 ### 6.1 上传媒体文件
 
-上传文件并获取 `mediaId`，用于在 WebSocket 消息中引用。
+上传文件到 S3 存储，返回文件信息和下载 URL。
 
 ```
 POST /api/media/upload
@@ -1276,27 +1269,28 @@ POST /api/media/upload
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `file` | file | 是 | 要上传的文件（最大 50MB） |
+| `file` | file | 是 | 要上传的文件（最大 500MB） |
+| `sessionId` | string | 否 | 会话 ID，用作 S3 key 前缀（不传则自动生成） |
 
 **响应：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `mediaId` | string | 媒体文件唯一标识 |
 | `fileName` | string | 文件名 |
 | `mimeType` | string | MIME 类型 |
 | `fileSize` | integer | 文件大小（字节） |
-| `downloadUrl` | string | 下载路径 |
+| `sessionId` | string | 会话 ID（传入的或自动生成的） |
+| `downloadUrl` | string | S3 公网下载 URL |
 
 **响应示例：**
 
 ```json
 {
-  "mediaId": "a1b2c3d4",
   "fileName": "photo.jpg",
   "mimeType": "image/jpeg",
   "fileSize": 102400,
-  "downloadUrl": "/api/media/download/a1b2c3d4"
+  "sessionId": "64c3459397604f5590cb50f97e236f43",
+  "downloadUrl": "http://host:9000/astron-claw-media/64c3459397604f5590cb50f97e236f43/photo.jpg"
 }
 ```
 
@@ -1313,7 +1307,8 @@ POST /api/media/upload
 ```bash
 curl -X POST http://127.0.0.1:8765/api/media/upload \
   -H "Authorization: Bearer sk-your-token" \
-  -F "file=@photo.jpg"
+  -F "file=@photo.jpg" \
+  -F "sessionId=my-session-id"
 ```
 
 ```python
@@ -1324,65 +1319,10 @@ with open("photo.jpg", "rb") as f:
         "http://127.0.0.1:8765/api/media/upload",
         headers={"Authorization": "Bearer sk-your-token"},
         files={"file": ("photo.jpg", f, "image/jpeg")},
+        data={"sessionId": "my-session-id"},
     )
 print(resp.json())
-# {'mediaId': 'a1b2c3d4', 'fileName': 'photo.jpg', ...}
-```
-
----
-
-### 6.2 下载媒体文件
-
-通过 `mediaId` 下载已上传的媒体文件。
-
-```
-GET /api/media/download/{media_id}
-```
-
-**认证方式（二选一）：**
-
-| 方式 | 示例 |
-|------|------|
-| Authorization 头 | `Authorization: Bearer sk-xxx` |
-| Query 参数 | `?token=sk-xxx` |
-
-**路径参数：**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `media_id` | string | 媒体文件 ID |
-
-**响应：**
-
-文件二进制流，`Content-Type` 为文件的 MIME 类型。
-
-**错误响应：**
-
-| 状态码 | 说明 |
-|--------|------|
-| `401` | Token 无效或缺失 |
-| `404` | 媒体文件不存在或已过期 |
-
-**测试代码：**
-
-```bash
-# 通过 Authorization 头
-curl -H "Authorization: Bearer sk-your-token" \
-  http://127.0.0.1:8765/api/media/download/a1b2c3d4 -o photo.jpg
-
-# 通过 Query 参数
-curl "http://127.0.0.1:8765/api/media/download/a1b2c3d4?token=sk-your-token" -o photo.jpg
-```
-
-```python
-import requests
-
-resp = requests.get(
-    "http://127.0.0.1:8765/api/media/download/a1b2c3d4",
-    headers={"Authorization": "Bearer sk-your-token"},
-)
-with open("downloaded.jpg", "wb") as f:
-    f.write(resp.content)
+# {'fileName': 'photo.jpg', 'downloadUrl': 'http://host:9000/...', ...}
 ```
 
 ---
