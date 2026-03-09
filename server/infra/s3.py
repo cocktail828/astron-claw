@@ -115,6 +115,10 @@ class S3Storage:
         """
         client = self._get_client()
 
+        # Ensure text types include charset so browsers decode CJK etc. correctly
+        if content_type.startswith("text/") and "charset" not in content_type:
+            content_type = f"{content_type}; charset=utf-8"
+
         kwargs: dict = {
             "Bucket": self._config.bucket,
             "Key": key,
