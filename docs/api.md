@@ -669,10 +669,16 @@ POST /bridge/chat
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `content` | string | 是 | 消息文本（文本类型时不能为空） |
+| `content` | string | 条件 | 消息文本（无媒体时不能为空） |
 | `sessionId` | string | 否 | 会话 ID。不传则自动创建新会话 |
-| `msgType` | string | 否 | 消息类型，默认 `"text"`。支持 `"image"` / `"file"` / `"audio"` / `"video"` |
-| `media` | object | 条件 | 媒体信息（`msgType` 非 text 时必填） |
+| `media` | array | 否 | 媒体项列表（最多 10 个），每项为 `MediaItem` 对象 |
+
+**MediaItem 对象：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | 媒体类型，目前仅支持 `"url"` |
+| `url` | string | 条件 | 媒体下载 URL（`type="url"` 时必填，仅 `http://` / `https://`） |
 
 **请求示例：**
 
@@ -681,7 +687,11 @@ POST /bridge/chat
 ```
 
 ```json
-{"content": "", "sessionId": "550e8400-...", "msgType": "image", "media": {"fileName": "photo.jpg", "mimeType": "image/jpeg", "fileSize": 102400, "downloadUrl": "http://host:9000/astron-claw-media/sid/photo.jpg"}}
+{"content": "看看这张图", "sessionId": "550e8400-...", "media": [{"type": "url", "url": "http://host:9000/astron-claw-media/sid/photo.jpg"}]}
+```
+
+```json
+{"content": "对比这两张图", "media": [{"type": "url", "url": "http://host:9000/bucket/a.jpg"}, {"type": "url", "url": "http://host:9000/bucket/b.png"}]}
 ```
 
 **响应：** `Content-Type: text/event-stream`
@@ -692,7 +702,7 @@ POST /bridge/chat
 
 | 状态码 | 说明 |
 |--------|------|
-| `400` | 空消息、缺少媒体信息、Bot 未连接 |
+| `400` | 空消息、不支持的媒体类型、无效 URL scheme、Bot 未连接 |
 | `401` | Token 无效或缺失 |
 | `404` | 指定的 sessionId 不存在 |
 | `500` | 发送到 Bot 失败 |
@@ -1019,7 +1029,7 @@ Token 支持两种传递方式（二选一）：
 | type | 字段 | 说明 |
 |------|------|------|
 | `text` | `text` | 文本内容 |
-| `media` | `msgType`, `media` | 媒体内容（图片/文件等） |
+| `media` | `msgType`, `media` | 媒体内容（`msgType` 固定为 `"file"`，`media` 仅含 `downloadUrl`） |
 
 **文本消息示例：**
 
@@ -1039,7 +1049,7 @@ Token 支持两种传递方式（二选一）：
 }
 ```
 
-**媒体消息示例：**
+**媒体消息示例（单文件 + 文本）：**
 
 ```json
 {
@@ -1050,14 +1060,11 @@ Token 支持两种传递方式（二选一）：
     "sessionId": "550e8400-e29b-41d4-a716-446655440000",
     "prompt": {
       "content": [
-        {"type": "text", "text": "[image]"},
+        {"type": "text", "text": "看看这张图"},
         {
           "type": "media",
-          "msgType": "image",
+          "msgType": "file",
           "media": {
-            "fileName": "photo.jpg",
-            "mimeType": "image/jpeg",
-            "fileSize": 102400,
             "downloadUrl": "http://host:9000/astron-claw-media/sid/photo.jpg"
           }
         }
@@ -1066,6 +1073,40 @@ Token 支持两种传递方式（二选一）：
   }
 }
 ```
+
+**多文件消息示例：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req_c3d4e5f6a7b8",
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": {
+      "content": [
+        {"type": "text", "text": "对比这两张图"},
+        {
+          "type": "media",
+          "msgType": "file",
+          "media": {
+            "downloadUrl": "http://host:9000/astron-claw-media/sid/a.jpg"
+          }
+        },
+        {
+          "type": "media",
+          "msgType": "file",
+          "media": {
+            "downloadUrl": "http://host:9000/astron-claw-media/sid/b.png"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+> **注意：** `msgType` 固定为 `"file"`，Bot 端应根据下载后的实际 MIME 类型判断媒体类别（图片/音频/视频/文件）。`media` 对象只包含 `downloadUrl`，不再传递 `fileName`/`mimeType`/`fileSize`。
 
 ---
 
