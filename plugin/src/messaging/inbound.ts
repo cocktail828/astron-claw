@@ -260,22 +260,22 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   };
 
   // Helper: send final completion to the bridge
+  // Always send agent_message_final even when text is empty (e.g. tool-only
+  // turns like file sends) so that the SSE stream receives a "done" frame.
   const sendFinal = (text: string): void => {
     if (finalSent) return;
     finalSent = true;
-    if (text) {
-      bridgeClient.send({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId,
-          update: {
-            sessionUpdate: "agent_message_final",
-            content: { type: "text", text },
-          },
+    bridgeClient.send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_final",
+          content: { type: "text", text: text || "" },
         },
-      });
-    }
+      },
+    });
   };
 
   // Build dispatcher options (following adp-openclaw pattern):
@@ -352,7 +352,8 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       });
 
       // Ensure final is sent even if SDK didn't call deliver with "final"
-      if (!finalSent && chunkCount > 0) {
+      // (covers tool-only turns where chunkCount is 0)
+      if (!finalSent) {
         if (!isSilentReplyText(lastPartialText, SILENT_REPLY_TOKEN)) {
           sendFinal(lastPartialText);
         }
