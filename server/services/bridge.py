@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlparse, unquote, quote, urlunparse
 
 from redis.asyncio import Redis
 
@@ -231,8 +232,7 @@ class ConnectionBridge:
         self,
         token: str,
         user_message: str,
-        msg_type: str = "text",
-        media: Optional[dict] = None,
+        media_urls: list[str] | None = None,
         session_id: str = "",
     ) -> Optional[str]:
         """Create a JSON-RPC request and send it to the bot.
@@ -248,40 +248,18 @@ class ConnectionBridge:
 
         # Build prompt content
         content_items = []
-        if msg_type == "text":
-            content_items.append({"type": "text", "text": user_message})
-        elif msg_type in ("image", "file", "audio", "video"):
-            media_info = {}
-            if media:
-                # Ensure download URL is properly percent-encoded for Claude API
-                download_url = media.get("downloadUrl", "")
-                if download_url:
-                    from urllib.parse import urlparse, unquote, quote, urlunparse
-                    parsed = urlparse(download_url)
-                    # Decode first to handle both encoded and unencoded URLs, then re-encode
-                    # to ensure Chinese/Unicode chars are properly percent-encoded
-                    decoded_path = unquote(parsed.path)
-                    encoded_path = quote(decoded_path, safe='/')
-                    download_url = urlunparse((
-                        parsed.scheme, parsed.netloc, encoded_path,
-                        parsed.params, parsed.query, parsed.fragment
-                    ))
 
-                media_info = {
-                    "fileName": media.get("fileName", ""),
-                    "mimeType": media.get("mimeType", ""),
-                    "fileSize": media.get("fileSize", 0),
-                    "downloadUrl": download_url,
-                }
-            description = user_message or f"[{msg_type}]"
-            content_items.append({"type": "text", "text": description})
-            content_items.append({
-                "type": "media",
-                "msgType": msg_type,
-                "media": media_info,
-            })
-        else:
-            content_items.append({"type": "text", "text": user_message})
+        if user_message:
+            content_items.append({"type": "text", "content": user_message})
+
+        for url in (media_urls or []):
+            encoded_url = _ensure_encoded_url(url)
+            content_items.append({"type": "url", "content": encoded_url})
+
+        if not content_items:
+            logger.error("send_to_bot called with empty content (token={}...)", token[:10])
+            self._pending_requests.pop(request_id, None)
+            return None
 
         rpc_request = {
             "jsonrpc": "2.0",
@@ -303,7 +281,7 @@ class ConnectionBridge:
             logger.exception("Failed to push to bot inbox (token={}...)", token[:10])
             self._pending_requests.pop(request_id, None)
             return None
-        logger.info("Sent to bot (inbox): req={} type={} (token={}...)", request_id, msg_type, token[:10])
+        logger.info("Sent to bot (inbox): req={} media={} (token={}...)", request_id, len(media_urls or []), token[:10])
         return request_id
 
     async def handle_bot_message(self, token: str, raw: str) -> None:
@@ -462,6 +440,17 @@ class ConnectionBridge:
         logger.info("Bridge worker {} shutdown complete", self._worker_id)
 
 
+def _ensure_encoded_url(url: str) -> str:
+    """Ensure URL path is properly percent-encoded (handles Unicode chars)."""
+    parsed = urlparse(url)
+    decoded_path = unquote(parsed.path)
+    encoded_path = quote(decoded_path, safe='/')
+    return urlunparse((
+        parsed.scheme, parsed.netloc, encoded_path,
+        parsed.params, parsed.query, parsed.fragment,
+    ))
+
+
 def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
     """Convert a bot JSON-RPC notification to a simplified chat event."""
     if method == "session/update":
@@ -494,17 +483,15 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
 
         if update_type == "agent_media":
             media = content.get("media", {})
-            return {
-                "type": "message",
-                "msgType": content.get("msgType", "file"),
-                "content": content.get("text", ""),
-                "media": {
-                    "fileName": media.get("fileName", ""),
-                    "mimeType": media.get("mimeType", ""),
-                    "fileSize": media.get("fileSize", 0),
-                    "downloadUrl": media.get("downloadUrl", ""),
-                },
-            }
+            download_url = media.get("downloadUrl", "")
+            if not download_url:
+                logger.warning("agent_media event missing downloadUrl")
+                return None
+            data: dict = {"type": "url", "content": download_url}
+            caption = content.get("text", "")
+            if caption:
+                data["caption"] = caption
+            return {"type": "media", "data": data}
 
         if isinstance(content, dict) and "text" in content:
             logger.debug("Bot event fallback to chunk: sessionUpdate={} (unknown type)", update_type)

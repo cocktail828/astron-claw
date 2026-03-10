@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from infra.log import logger
 import services.state as state
@@ -22,11 +22,30 @@ _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 # Request / response models
 # ---------------------------------------------------------------------------
 
+class MediaItem(BaseModel):
+    type: str            # "url" | "base64" | "s3_key" (only "url" implemented now)
+    content: str         # primary value: URL / base64 data / S3 key
+    mimeType: str = ""   # required only for type="base64"
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Media item content must not be empty")
+        return v
+
+
 class ChatRequest(BaseModel):
     content: str = ""
     sessionId: Optional[str] = None
-    msgType: str = "text"
-    media: Optional[dict] = None
+    media: Optional[list[MediaItem]] = None
+
+    @field_validator("media")
+    @classmethod
+    def validate_media(cls, v):
+        if v is not None and len(v) > 10:
+            raise ValueError("Too many media items (max 10)")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +159,17 @@ async def _stream_response(
                 continue
 
             event_type = event.pop("type", "message")
-            yield _sse_event(event_type, event)
+
+            # For media events, the payload is nested under "data" key
+            # so that SSE data contains only {type, content} without the event type
+            if event_type == "media":
+                event_data = event.pop("data", None)
+                if not event_data:
+                    logger.warning("SSE: media event missing data payload (token={}...)", token[:10])
+                    continue
+            else:
+                event_data = event
+            yield _sse_event(event_type, event_data)
 
             # Terminal events — close the stream
             if event_type in ("done", "error"):
@@ -191,20 +220,29 @@ async def chat_sse(
             content={"ok": False, "error": "Invalid or missing token"},
         )
 
-    # Validate message content
-    msg_type = body.msgType or "text"
+    # Validate message content — normalize media URLs
     content = body.content or ""
+    media_urls: list[str] = []
 
-    if msg_type == "text" and not content:
+    if body.media:
+        for item in body.media:
+            if item.type == "url":
+                if not item.content.startswith(("http://", "https://")):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"ok": False, "error": f"Invalid media URL scheme: {item.content}"},
+                    )
+                media_urls.append(item.content)
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={"ok": False, "error": f"Unsupported media type: {item.type}"},
+                )
+
+    if not content and not media_urls:
         return JSONResponse(
             status_code=400,
             content={"ok": False, "error": "Empty message"},
-        )
-
-    if msg_type in ("image", "file", "audio", "video") and not body.media:
-        return JSONResponse(
-            status_code=400,
-            content={"ok": False, "error": f"Missing media info for type: {msg_type}"},
         )
 
     # Check bot connected
@@ -232,8 +270,7 @@ async def chat_sse(
     # Send message to bot via Redis Stream inbox
     req_id = await state.bridge.send_to_bot(
         token, content,
-        msg_type=msg_type,
-        media=body.media,
+        media_urls=media_urls or None,
         session_id=session_id,
     )
     if not req_id:

@@ -70,9 +70,9 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const textParts: string[] = [];
   const mediaItems: any[] = [];
   for (const item of contentItems) {
-    if (item.type === "text" && item.text) {
-      textParts.push(item.text);
-    } else if (item.type === "media" && item.media) {
+    if (item.type === "text" && item.content) {
+      textParts.push(item.content);
+    } else if (item.type === "url" && item.content) {
       mediaItems.push(item);
     }
   }
@@ -89,8 +89,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const placeholders: string[] = [];
   const mediaDir = mediaItems.length > 0 ? await ensureInboundMediaDir() : "";
   for (const item of mediaItems) {
-    const mediaInfo = item.media;
-    const downloadUrl = mediaInfo?.downloadUrl;
+    const downloadUrl = item.content;
     if (!downloadUrl) continue;
 
     // Guard: only accept HTTP URLs (loadWebMedia has localRoots whitelist for local paths)
@@ -104,20 +103,31 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       let contentType: string;
       let fileName: string;
 
+      // Extract file name from URL path (e.g. /sid/photo.jpg → "photo")
+      let rawName: string;
+      try {
+        rawName = decodeURIComponent(
+          new URL(downloadUrl).pathname.split("/").pop() ?? "file"
+        );
+      } catch {
+        rawName = new URL(downloadUrl).pathname.split("/").pop() ?? "file";
+      }
+      const urlBaseName = rawName.replace(/\.[^.]+$/, "") || "file";
+
       try {
         // Primary: use SDK loadWebMedia (with image optimization)
         const loaded = await loadWebMedia(downloadUrl);
         buffer = Buffer.from(loaded.buffer);
-        contentType = loaded.contentType ?? mediaInfo.mimeType ?? "application/octet-stream";
-        fileName = loaded.fileName ?? mediaInfo.fileName ?? "file";
+        contentType = loaded.contentType ?? "application/octet-stream";
+        fileName = loaded.fileName ?? urlBaseName;
       } catch (sdkErr) {
         // Fallback: native fetch (bypasses SDK SSRF for trusted bridge URLs)
         logger.warn(`loadWebMedia blocked, falling back to native fetch: ${String(sdkErr)}`);
         const resp = await fetch(downloadUrl);
         if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
         buffer = Buffer.from(await resp.arrayBuffer());
-        contentType = resp.headers.get("content-type") ?? mediaInfo.mimeType ?? "application/octet-stream";
-        fileName = mediaInfo.fileName ?? "file";
+        contentType = resp.headers.get("content-type") ?? "application/octet-stream";
+        fileName = urlBaseName;
       }
 
       // Save buffer to SDK convention path: ~/.openclaw/media/inbound/{name}---{uuid}{ext}

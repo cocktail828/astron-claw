@@ -57,7 +57,7 @@ class TestRegisterBot:
 
 class TestSendToBot:
     async def test_send_to_bot_text(self, bridge, mock_queue):
-        req_id = await bridge.send_to_bot("tok-1", "hello", msg_type="text", session_id="session-id-1")
+        req_id = await bridge.send_to_bot("tok-1", "hello", session_id="session-id-1")
         assert req_id is not None
         assert req_id.startswith("req_")
         assert bridge._pending_requests[req_id] == ("tok-1", "session-id-1")
@@ -70,16 +70,11 @@ class TestSendToBot:
         assert sent["method"] == "session/prompt"
         content_items = sent["params"]["prompt"]["content"]
         assert len(content_items) == 1
-        assert content_items[0] == {"type": "text", "text": "hello"}
+        assert content_items[0] == {"type": "text", "content": "hello"}
 
-    async def test_send_to_bot_image(self, bridge, mock_queue):
-        media = {
-            "fileName": "photo.png",
-            "mimeType": "image/png",
-            "fileSize": 1024,
-            "downloadUrl": "http://localhost:9000/astron-claw-media/sid/photo.png",
-        }
-        req_id = await bridge.send_to_bot("tok-1", "my photo", msg_type="image", media=media, session_id="session-id-1")
+    async def test_send_to_bot_single_media(self, bridge, mock_queue):
+        media_urls = ["http://localhost:9000/astron-claw-media/sid/photo.png"]
+        req_id = await bridge.send_to_bot("tok-1", "my photo", media_urls=media_urls, session_id="session-id-1")
         assert req_id is not None
 
         inbox_key, payload_str = mock_queue.publish.call_args[0]
@@ -88,8 +83,52 @@ class TestSendToBot:
         content_items = sent["params"]["prompt"]["content"]
         assert len(content_items) == 2
         assert content_items[0]["type"] == "text"
-        assert content_items[1]["type"] == "media"
-        assert content_items[1]["media"]["downloadUrl"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
+        assert content_items[0]["content"] == "my photo"
+        assert content_items[1]["type"] == "url"
+        assert content_items[1]["content"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
+
+    async def test_send_to_bot_multi_media(self, bridge, mock_queue):
+        media_urls = [
+            "http://localhost:9000/astron-claw-media/sid/photo1.jpg",
+            "http://localhost:9000/astron-claw-media/sid/photo2.png",
+        ]
+        req_id = await bridge.send_to_bot("tok-1", "compare these", media_urls=media_urls, session_id="session-id-1")
+        assert req_id is not None
+
+        inbox_key, payload_str = mock_queue.publish.call_args[0]
+        data = json.loads(payload_str)
+        content_items = data["rpc_request"]["params"]["prompt"]["content"]
+        assert len(content_items) == 3
+        assert content_items[0] == {"type": "text", "content": "compare these"}
+        assert content_items[1]["content"].endswith("/photo1.jpg")
+        assert content_items[2]["content"].endswith("/photo2.png")
+
+    async def test_send_to_bot_media_only(self, bridge, mock_queue):
+        """Media without text content should produce only media items."""
+        media_urls = ["http://localhost:9000/astron-claw-media/sid/voice.mp3"]
+        req_id = await bridge.send_to_bot("tok-1", "", media_urls=media_urls, session_id="session-id-1")
+        assert req_id is not None
+
+        inbox_key, payload_str = mock_queue.publish.call_args[0]
+        data = json.loads(payload_str)
+        content_items = data["rpc_request"]["params"]["prompt"]["content"]
+        assert len(content_items) == 1
+        assert content_items[0]["type"] == "url"
+        assert content_items[0]["content"].endswith("/voice.mp3")
+
+    async def test_send_to_bot_unicode_url_encoded(self, bridge, mock_queue):
+        """Unicode characters in media URL should be percent-encoded."""
+        media_urls = ["http://localhost:9000/astron-claw-media/sid/照片.jpg"]
+        req_id = await bridge.send_to_bot("tok-1", "check", media_urls=media_urls, session_id="session-id-1")
+        assert req_id is not None
+
+        inbox_key, payload_str = mock_queue.publish.call_args[0]
+        data = json.loads(payload_str)
+        content_items = data["rpc_request"]["params"]["prompt"]["content"]
+        download_url = content_items[1]["content"]
+        # Unicode should be percent-encoded
+        assert "照片" not in download_url
+        assert "%E7%85%A7%E7%89%87" in download_url
 
     async def test_send_to_bot_requires_session_id(self, bridge, mock_queue):
         """send_to_bot returns None when session_id is not provided."""
@@ -252,7 +291,7 @@ class TestSendToBotRemote:
         assert inbox_key == "bridge:bot_inbox:tok-1"
         data = json.loads(payload_str)
         assert data["rpc_request"]["method"] == "session/prompt"
-        assert data["rpc_request"]["params"]["prompt"]["content"][0]["text"] == "hello"
+        assert data["rpc_request"]["params"]["prompt"]["content"][0]["content"] == "hello"
 
 
 class TestBotStatusLogging:

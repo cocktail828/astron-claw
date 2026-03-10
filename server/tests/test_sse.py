@@ -5,7 +5,24 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from routers.sse import _authenticate, _resolve_session, _sse_event, _sse_comment
+from routers.sse import _authenticate, _resolve_session, _sse_event, _sse_comment, MediaItem
+
+
+# ── MediaItem validation ───────────────────────────────────────────────────
+
+
+class TestMediaItemValidation:
+    def test_empty_content_rejected(self):
+        with pytest.raises(Exception):
+            MediaItem(type="url", content="")
+
+    def test_whitespace_content_rejected(self):
+        with pytest.raises(Exception):
+            MediaItem(type="url", content="   ")
+
+    def test_valid_content_accepted(self):
+        item = MediaItem(type="url", content="http://example.com/file.jpg")
+        assert item.content == "http://example.com/file.jpg"
 
 
 # ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -96,6 +113,26 @@ class TestResolveSession:
 # with mocked state, avoiding the need for a full app setup.
 
 
+@pytest.fixture
+def mock_state_valid_token():
+    """Mock state with a valid token. Yields the mock_state object."""
+    with patch("routers.sse.state") as mock_state:
+        mock_state.token_manager.validate = AsyncMock(return_value=True)
+        yield mock_state
+
+
+@pytest.fixture
+def mock_state_full(mock_state_valid_token):
+    """Mock state with valid token, connected bot, existing session, and send_to_bot stub."""
+    ms = mock_state_valid_token
+    ms.bridge.is_bot_connected = AsyncMock(return_value=True)
+    ms.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
+    ms.bridge.create_session = AsyncMock(return_value=("sid-new", 1))
+    ms.bridge.send_to_bot = AsyncMock(return_value="req_abc")
+    ms.queue = AsyncMock()
+    return ms
+
+
 class TestChatSseEndpoint:
     """Test chat_sse route handler validation paths."""
 
@@ -115,89 +152,104 @@ class TestChatSseEndpoint:
             resp = await chat_sse(body, authorization="Bearer sk-bad")
             assert resp.status_code == 401
 
-    async def test_400_empty_text(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="")
-            resp = await chat_sse(body, authorization="Bearer sk-valid")
-            assert resp.status_code == 400
-            assert "Empty message" in resp.body.decode()
+    async def test_400_empty_message(self, mock_state_valid_token):
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(content="")
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.status_code == 400
+        assert "Empty message" in resp.body.decode()
 
-    async def test_400_media_missing(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="", msgType="image", media=None)
-            resp = await chat_sse(body, authorization="Bearer sk-valid")
-            assert resp.status_code == 400
-            assert "Missing media info" in resp.body.decode()
+    async def test_400_unsupported_media_type(self, mock_state_valid_token):
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(
+            content="hello",
+            media=[MediaItem(type="base64", content="abc", mimeType="image/png")],
+        )
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.status_code == 400
+        assert "Unsupported media type" in resp.body.decode()
 
-    async def test_400_bot_not_connected(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            mock_state.bridge.is_bot_connected = AsyncMock(return_value=False)
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello")
-            resp = await chat_sse(body, authorization="Bearer sk-valid")
-            assert resp.status_code == 400
-            assert "No bot connected" in resp.body.decode()
+    async def test_400_invalid_url_scheme(self, mock_state_valid_token):
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(
+            content="hello",
+            media=[MediaItem(type="url", content="ftp://bad/file.jpg")],
+        )
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.status_code == 400
+        assert "Invalid media URL scheme" in resp.body.decode()
 
-    async def test_404_session_not_found(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_session = AsyncMock(return_value=None)
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello", sessionId="nonexistent")
-            resp = await chat_sse(body, authorization="Bearer sk-valid")
-            assert resp.status_code == 404
-            assert "Session not found" in resp.body.decode()
+    async def test_400_bot_not_connected(self, mock_state_valid_token):
+        mock_state_valid_token.bridge.is_bot_connected = AsyncMock(return_value=False)
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(content="hello")
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.status_code == 400
+        assert "No bot connected" in resp.body.decode()
 
-    async def test_500_send_to_bot_fails(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
-            mock_state.bridge.send_to_bot = AsyncMock(return_value=None)
-            mock_queue = AsyncMock()
-            mock_state.queue = mock_queue
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello", sessionId="sid-1")
-            resp = await chat_sse(body, authorization="Bearer sk-valid")
-            assert resp.status_code == 500
-            assert "Failed to send" in resp.body.decode()
+    async def test_404_session_not_found(self, mock_state_valid_token):
+        mock_state_valid_token.bridge.is_bot_connected = AsyncMock(return_value=True)
+        mock_state_valid_token.bridge.get_session = AsyncMock(return_value=None)
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(content="hello", sessionId="nonexistent")
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.status_code == 404
+        assert "Session not found" in resp.body.decode()
 
-    async def test_200_returns_sse_stream(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
-            mock_state.bridge.send_to_bot = AsyncMock(return_value="req_abc")
-            mock_queue = AsyncMock()
-            mock_state.queue = mock_queue
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello", sessionId="sid-1")
-            resp = await chat_sse(body, authorization="Bearer sk-valid")
-            assert resp.media_type == "text/event-stream"
-            assert resp.headers["Cache-Control"] == "no-cache"
+    async def test_500_send_to_bot_fails(self, mock_state_full):
+        mock_state_full.bridge.send_to_bot = AsyncMock(return_value=None)
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(content="hello", sessionId="sid-1")
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.status_code == 500
+        assert "Failed to send" in resp.body.decode()
 
-    async def test_inbox_purged_before_send(self):
+    async def test_200_returns_sse_stream(self, mock_state_full):
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(content="hello", sessionId="sid-1")
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.media_type == "text/event-stream"
+        assert resp.headers["Cache-Control"] == "no-cache"
+
+    async def test_inbox_purged_before_send(self, mock_state_full):
         """Stale events in inbox are purged and group is recreated before sending to bot."""
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            mock_state.bridge.is_bot_connected = AsyncMock(return_value=True)
-            mock_state.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
-            mock_state.bridge.send_to_bot = AsyncMock(return_value="req_abc")
-            mock_queue = AsyncMock()
-            mock_state.queue = mock_queue
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello", sessionId="sid-1")
-            await chat_sse(body, authorization="Bearer sk-valid")
-            # Verify inbox was purged and group recreated
-            inbox = "bridge:chat_inbox:sk-valid:sid-1"
-            mock_queue.purge.assert_awaited_once_with(inbox)
-            mock_queue.ensure_group.assert_awaited_once_with(inbox, "sse")
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(content="hello", sessionId="sid-1")
+        await chat_sse(body, authorization="Bearer sk-valid")
+        # Verify inbox was purged and group recreated
+        inbox = "bridge:chat_inbox:sk-valid:sid-1"
+        mock_state_full.queue.purge.assert_awaited_once_with(inbox)
+        mock_state_full.queue.ensure_group.assert_awaited_once_with(inbox, "sse")
+
+    async def test_200_media_only(self, mock_state_full):
+        """Media-only message (no text) should be accepted."""
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(
+            media=[MediaItem(type="url", content="http://host:9000/file.mp3")],
+        )
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.media_type == "text/event-stream"
+        call_kwargs = mock_state_full.bridge.send_to_bot.call_args
+        assert call_kwargs[1]["media_urls"] == ["http://host:9000/file.mp3"]
+
+    async def test_200_multi_media(self, mock_state_full):
+        """Multiple media items should all be passed through."""
+        from routers.sse import chat_sse, ChatRequest
+        body = ChatRequest(
+            content="compare",
+            sessionId="sid-1",
+            media=[
+                MediaItem(type="url", content="http://host:9000/a.jpg"),
+                MediaItem(type="url", content="http://host:9000/b.png"),
+            ],
+        )
+        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        assert resp.media_type == "text/event-stream"
+        call_kwargs = mock_state_full.bridge.send_to_bot.call_args
+        assert call_kwargs[1]["media_urls"] == [
+            "http://host:9000/a.jpg",
+            "http://host:9000/b.png",
+        ]
 
 
 class TestListSessionsEndpoint:

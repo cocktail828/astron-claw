@@ -87,12 +87,47 @@ class TestTranslateBotEventMedia:
             },
         }}
         result = _translate_bot_event("session/update", params)
-        assert result["type"] == "message"
-        assert result["msgType"] == "image"
-        assert result["content"] == "Here is the file"
-        assert result["media"]["downloadUrl"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
-        assert result["media"]["fileName"] == "photo.png"
-        assert "mediaId" not in result["media"]
+        assert result["type"] == "media"
+        assert result["data"]["type"] == "url"
+        assert result["data"]["content"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
+        assert result["data"]["caption"] == "Here is the file"
+
+    def test_agent_media_no_caption(self):
+        params = {"update": {
+            "sessionUpdate": "agent_media",
+            "content": {
+                "media": {
+                    "downloadUrl": "http://localhost:9000/astron-claw-media/sid/photo.png",
+                },
+            },
+        }}
+        result = _translate_bot_event("session/update", params)
+        assert result["type"] == "media"
+        assert result["data"]["type"] == "url"
+        assert "caption" not in result["data"]
+
+    def test_agent_media_missing_download_url(self):
+        """agent_media with empty downloadUrl should return None."""
+        params = {"update": {
+            "sessionUpdate": "agent_media",
+            "content": {
+                "text": "Here is the file",
+                "media": {},
+            },
+        }}
+        result = _translate_bot_event("session/update", params)
+        assert result is None
+
+    def test_agent_media_no_media_field(self):
+        """agent_media without media dict should return None."""
+        params = {"update": {
+            "sessionUpdate": "agent_media",
+            "content": {
+                "text": "oops",
+            },
+        }}
+        result = _translate_bot_event("session/update", params)
+        assert result is None
 
 
 class TestTranslateBotEventFallback:

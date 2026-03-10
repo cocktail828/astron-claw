@@ -859,6 +859,7 @@ html, body {
   cursor: pointer;
   transition: all var(--transition);
   flex-shrink: 0;
+  position: relative;
 }
 
 .attach-btn:hover {
@@ -871,11 +872,11 @@ html, body {
   height: 20px;
 }
 
-/* ===== File Preview Bar ===== */
+/* ===== File Preview (Multi-file Chip Container) ===== */
 .file-preview {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 8px;
   padding: 8px 12px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
@@ -884,25 +885,41 @@ html, body {
   max-width: 800px;
   margin-left: auto;
   margin-right: auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
   animation: msgIn 0.2s ease;
 }
 
-.file-preview-thumb {
-  width: 48px;
-  height: 48px;
-  border-radius: 6px;
-  object-fit: cover;
+.file-chip {
   flex-shrink: 0;
+  max-width: 200px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
   background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  position: relative;
 }
 
-.file-preview-info {
+.file-chip-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg-tertiary);
+}
+
+.file-chip-info {
   flex: 1;
   min-width: 0;
 }
 
-.file-preview-name {
-  font-size: 13px;
+.file-chip-name {
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -910,31 +927,90 @@ html, body {
   text-overflow: ellipsis;
 }
 
-.file-preview-size {
-  font-size: 12px;
+.file-chip-size {
+  font-size: 11px;
   color: var(--text-muted);
 }
 
-.file-preview-remove {
-  width: 28px;
-  height: 28px;
+.file-chip-remove {
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   color: var(--text-muted);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: none;
+  border-radius: 50%;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   flex-shrink: 0;
   transition: all var(--transition);
+  padding: 0;
 }
 
-.file-preview-remove:hover {
+.file-chip-remove:hover {
   color: var(--error);
-  border-color: var(--error);
   background: rgba(239, 68, 68, 0.1);
+}
+
+.file-chip-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+}
+
+@keyframes chipSpin {
+  to { transform: rotate(360deg); }
+}
+
+.file-chip-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: chipSpin 0.6s linear infinite;
+}
+
+.file-count-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* ===== Media Grid (multi-file in message bubble) ===== */
+.media-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.media-grid .media-image {
+  max-width: 150px;
+  max-height: 150px;
+}
+
+.media-grid .media-file-card {
+  max-width: 200px;
 }
 
 /* ===== Media in Messages ===== */
@@ -1400,8 +1476,8 @@ body.drawer-pinned .session-overlay {
           <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
         </svg>
       </button>
-      <input type="file" id="file-input" class="hidden" onchange="handleFileSelect(this.files)">
-      <textarea id="msg-input" rows="1" placeholder="Type a message..." onkeydown="handleKeyDown(event)" oninput="autoGrow(this)"></textarea>
+      <input type="file" id="file-input" class="hidden" multiple onchange="handleFileSelect(this.files)">
+      <textarea id="msg-input" rows="1" placeholder="Type a message..." onkeydown="handleKeyDown(event)" oninput="autoGrow(this)" onpaste="handlePaste(event)"></textarea>
       <button class="send-btn" id="send-btn" onclick="sendMessage()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -1431,7 +1507,10 @@ let isStreaming = false;
 let currentAssistantEl = null;
 let currentAssistantText = '';
 let botConnected = false;
-let pendingFile = null;  // { file: File, previewUrl: string|null }
+let pendingFiles = [];  // Array<{ id, file, previewUrl }>
+let pendingFileIdCounter = 0;
+const MAX_PENDING_FILES = 10;
+const MAX_FILE_SIZE = 500 * 1024 * 1024;  // 500 MB
 
 // ===== Tool Card State =====
 let pendingToolCalls = new Map();  // pairKey -> {element, name}
@@ -1577,7 +1656,7 @@ function disconnect() {
   isStreaming = false;
   currentAssistantEl = null;
   currentAssistantText = '';
-  clearPendingFile();
+  clearPendingFiles();
   pendingToolCalls.clear();
   toolCallCounters = {};
 
@@ -1688,7 +1767,7 @@ async function sseCreateSession() {
   }
 }
 
-async function sseSendMessage(content, msgType, media) {
+async function sseSendMessage(content, mediaItems) {
   if (sseAbortController) {
     sseAbortController.abort();
   }
@@ -1696,9 +1775,8 @@ async function sseSendMessage(content, msgType, media) {
 
   const body = { content };
   if (currentSessionId) body.sessionId = currentSessionId;
-  if (msgType && msgType !== 'text') {
-    body.msgType = msgType;
-    if (media) body.media = media;
+  if (mediaItems && mediaItems.length > 0) {
+    body.media = mediaItems;
   }
 
   setInputEnabled(false);
@@ -1773,7 +1851,7 @@ async function sseSendMessage(content, msgType, media) {
           }
 
           // Map SSE event to handleServerMessage format
-          handleServerMessage({ type: eventType, ...data });
+          handleServerMessage({ ...data, type: eventType });
 
           if (eventType === 'done' || eventType === 'error') {
             return;
@@ -1833,7 +1911,7 @@ function handleServerMessage(msg) {
     case 'bot_status':
       handleBotStatus(msg.connected);
       break;
-    case 'message':
+    case 'media':
       handleMediaMessage(msg);
       break;
     default:
@@ -2023,9 +2101,12 @@ function handleBotStatus(connected) {
 
 function handleMediaMessage(msg) {
   finalizeStream();
-  const msgType = msg.msgType || 'file';
-  const media = msg.media;
-  const caption = msg.content || '';
+  const url = msg.content || '';
+  if (!url) return;
+
+  const caption = msg.caption || '';
+  // Infer media type from URL extension
+  const msgType = inferMsgTypeFromUrl(url);
 
   const list = document.getElementById('messages-list');
   const msgDiv = document.createElement('div');
@@ -2034,9 +2115,7 @@ function handleMediaMessage(msg) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
 
-  if (media && media.downloadUrl) {
-    bubble.innerHTML = renderMediaContent(msgType, media, false);
-  }
+  bubble.innerHTML = renderMediaContent(msgType, url);
 
   if (caption) {
     bubble.innerHTML += `<div class="media-caption">${renderMarkdown(caption)}</div>`;
@@ -2111,7 +2190,7 @@ function addUserMessage(text) {
   }
 }
 
-function addUserMediaMessage(msgType, file, caption, media) {
+function addUserMediaMessage(files, caption) {
   const list = document.getElementById('messages-list');
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message user';
@@ -2119,25 +2198,44 @@ function addUserMediaMessage(msgType, file, caption, media) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
 
-  // For the user's own message, show a local preview
-  if (msgType === 'image') {
-    const localUrl = URL.createObjectURL(file);
-    bubble.innerHTML = `<img class="media-image" src="${localUrl}" alt="${escapeHtml(file.name)}" onclick="openLightbox(this.src)">`;
-  } else if (msgType === 'audio') {
-    const localUrl = URL.createObjectURL(file);
-    bubble.innerHTML = `<audio class="media-audio" controls preload="none"><source src="${localUrl}" type="${escapeHtml(file.type)}"></audio>`;
-  } else if (msgType === 'video') {
-    const localUrl = URL.createObjectURL(file);
-    bubble.innerHTML = `<video class="media-video" controls preload="metadata"><source src="${localUrl}" type="${escapeHtml(file.type)}"></video>`;
-  } else {
-    bubble.innerHTML = `<div class="media-file-card">
-      <span class="media-file-icon">&#128196;</span>
-      <div class="media-file-info">
-        <div class="media-file-name">${escapeHtml(file.name)}</div>
-        <div class="media-file-size">${formatFileSize(file.size)}</div>
-      </div>
-    </div>`;
+  const useGrid = files.length > 1;
+  const container = useGrid ? document.createElement('div') : bubble;
+  if (useGrid) container.className = 'media-grid';
+
+  for (const f of files) {
+    const file = f.file;
+    const msgType = getMsgTypeFromMime(file.type);
+    let html = '';
+
+    if (msgType === 'image') {
+      const localUrl = URL.createObjectURL(file);
+      html = `<img class="media-image" src="${localUrl}" alt="${escapeHtml(file.name)}" onclick="openLightbox(this.src)">`;
+    } else if (msgType === 'audio') {
+      const localUrl = URL.createObjectURL(file);
+      html = `<audio class="media-audio" controls preload="none"><source src="${localUrl}" type="${escapeHtml(file.type)}"></audio>`;
+    } else if (msgType === 'video') {
+      const localUrl = URL.createObjectURL(file);
+      html = `<video class="media-video" controls preload="metadata"><source src="${localUrl}" type="${escapeHtml(file.type)}"></video>`;
+    } else {
+      html = `<div class="media-file-card">
+        <span class="media-file-icon">&#128196;</span>
+        <div class="media-file-info">
+          <div class="media-file-name">${escapeHtml(file.name)}</div>
+          <div class="media-file-size">${formatFileSize(file.size)}</div>
+        </div>
+      </div>`;
+    }
+
+    if (useGrid) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
+      while (wrapper.firstChild) container.appendChild(wrapper.firstChild);
+    } else {
+      bubble.innerHTML += html;
+    }
   }
+
+  if (useGrid) bubble.appendChild(container);
 
   if (caption) {
     bubble.innerHTML += `<div class="media-caption">${escapeHtml(caption)}</div>`;
@@ -2171,11 +2269,6 @@ function getHttpBaseUrl() {
   return httpBaseUrl;
 }
 
-function getMediaUrl(downloadUrl) {
-  // downloadUrl is a full S3 public URL — use directly
-  return downloadUrl;
-}
-
 function formatFileSize(bytes) {
   if (!bytes || bytes === 0) return '';
   if (bytes < 1024) return bytes + ' B';
@@ -2191,25 +2284,56 @@ function getMsgTypeFromMime(mimeType) {
   return 'file';
 }
 
-function renderMediaContent(msgType, media, isUser) {
-  const url = getMediaUrl(media.downloadUrl);
-  const fileName = escapeHtml(media.fileName || 'file');
-  const fileSize = formatFileSize(media.fileSize);
+function extractFileNameFromUrl(url) {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split('/').pop() || 'file');
+  } catch {
+    return 'file';
+  }
+}
+
+const EXT_MIME_MAP = {
+  'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif',
+  'webp': 'image/webp', 'bmp': 'image/bmp', 'svg': 'image/svg+xml', 'ico': 'image/x-icon',
+  'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'ogg': 'audio/ogg', 'aac': 'audio/aac',
+  'flac': 'audio/flac', 'm4a': 'audio/mp4', 'wma': 'audio/x-ms-wma',
+  'mp4': 'video/mp4', 'webm': 'video/webm', 'mkv': 'video/x-matroska',
+  'avi': 'video/x-msvideo', 'mov': 'video/quicktime', 'wmv': 'video/x-ms-wmv',
+};
+
+function inferMimeTypeFromUrl(url) {
+  try {
+    const ext = new URL(url).pathname.split('.').pop().toLowerCase();
+    return EXT_MIME_MAP[ext] || '';
+  } catch { return ''; }
+}
+
+function inferMsgTypeFromUrl(url) {
+  const mime = inferMimeTypeFromUrl(url);
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+function renderMediaContent(msgType, url) {
+  const rawFileName = extractFileNameFromUrl(url);
+  const fileName = escapeHtml(rawFileName);
   const safeUrl = url.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  const mimeType = inferMimeTypeFromUrl(url);
 
   switch (msgType) {
     case 'image':
       return `<img class="media-image" src="${safeUrl}" alt="${fileName}" onclick="openLightbox(this.src)" loading="lazy">`;
     case 'audio':
-      return `<audio class="media-audio" controls preload="none"><source src="${safeUrl}" type="${escapeHtml(media.mimeType || '')}">Your browser does not support audio.</audio>`;
+      return `<audio class="media-audio" controls preload="none"><source src="${safeUrl}"${mimeType ? ` type="${mimeType}"` : ''}>Your browser does not support audio.</audio>`;
     case 'video':
-      return `<video class="media-video" controls preload="metadata"><source src="${safeUrl}" type="${escapeHtml(media.mimeType || '')}">Your browser does not support video.</video>`;
+      return `<video class="media-video" controls preload="metadata"><source src="${safeUrl}"${mimeType ? ` type="${mimeType}"` : ''}>Your browser does not support video.</video>`;
     default:
       return `<div class="media-file-card">
         <span class="media-file-icon">&#128196;</span>
         <div class="media-file-info">
           <div class="media-file-name">${fileName}</div>
-          ${fileSize ? '<div class="media-file-size">' + fileSize + '</div>' : ''}
         </div>
         <a class="media-file-download" href="${safeUrl}" download="${fileName}" title="Download">&#8595;</a>
       </div>`;
@@ -2217,52 +2341,167 @@ function renderMediaContent(msgType, media, isUser) {
 }
 
 // ===== File Selection & Preview =====
+function validateFile(file) {
+  if (!file.size) return 'File is empty';
+  if (file.size > MAX_FILE_SIZE) return `File too large (max ${formatFileSize(MAX_FILE_SIZE)})`;
+  return null;
+}
+
 function handleFileSelect(files) {
   if (!files || files.length === 0) return;
-  const file = files[0];
-  setPendingFile(file);
+  for (let i = 0; i < files.length; i++) {
+    if (pendingFiles.length >= MAX_PENDING_FILES) {
+      addSystemMessage(`Maximum ${MAX_PENDING_FILES} files allowed`, true);
+      break;
+    }
+    const err = validateFile(files[i]);
+    if (err) {
+      addSystemMessage(`${files[i].name}: ${err}`, true);
+      continue;
+    }
+    addPendingFile(files[i]);
+  }
   // Reset the file input so the same file can be re-selected
   document.getElementById('file-input').value = '';
 }
 
-function setPendingFile(file) {
-  clearPendingFile();
-  const previewEl = document.getElementById('file-preview');
+function addPendingFile(file) {
   const isImage = file.type.startsWith('image/');
-  let previewUrl = null;
-
-  if (isImage) {
-    previewUrl = URL.createObjectURL(file);
-  }
-
-  pendingFile = { file, previewUrl };
-
-  let thumbHtml;
-  if (isImage && previewUrl) {
-    thumbHtml = `<img class="file-preview-thumb" src="${previewUrl}" alt="Preview">`;
-  } else {
-    thumbHtml = `<div class="file-preview-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">&#128196;</div>`;
-  }
-
-  previewEl.innerHTML = `
-    ${thumbHtml}
-    <div class="file-preview-info">
-      <div class="file-preview-name">${escapeHtml(file.name)}</div>
-      <div class="file-preview-size">${formatFileSize(file.size)}</div>
-    </div>
-    <button class="file-preview-remove" onclick="clearPendingFile()" title="Remove">&#10005;</button>
-  `;
-  previewEl.classList.remove('hidden');
+  const previewUrl = isImage ? URL.createObjectURL(file) : null;
+  pendingFiles.push({ id: ++pendingFileIdCounter, file, previewUrl });
+  renderFilePreview();
 }
 
-function clearPendingFile() {
-  if (pendingFile && pendingFile.previewUrl) {
-    URL.revokeObjectURL(pendingFile.previewUrl);
-  }
-  pendingFile = null;
+function renderFilePreview() {
   const previewEl = document.getElementById('file-preview');
-  previewEl.innerHTML = '';
-  previewEl.classList.add('hidden');
+  const badge = document.getElementById('file-count-badge');
+
+  if (pendingFiles.length === 0) {
+    previewEl.innerHTML = '';
+    previewEl.classList.add('hidden');
+    if (badge) badge.remove();
+    return;
+  }
+
+  let html = '';
+  for (const pf of pendingFiles) {
+    const isImage = pf.file.type.startsWith('image/');
+    const thumbHtml = isImage && pf.previewUrl
+      ? `<img class="file-chip-thumb" src="${pf.previewUrl}" alt="Preview">`
+      : `<div class="file-chip-thumb" style="display:flex;align-items:center;justify-content:center;font-size:18px;">&#128196;</div>`;
+
+    html += `<div class="file-chip" data-id="${pf.id}">
+      ${thumbHtml}
+      <div class="file-chip-info">
+        <div class="file-chip-name">${escapeHtml(pf.file.name)}</div>
+        <div class="file-chip-size">${formatFileSize(pf.file.size)}</div>
+      </div>
+      <button class="file-chip-remove" onclick="removePendingFile(${pf.id})" title="Remove">&#10005;</button>
+    </div>`;
+  }
+
+  previewEl.innerHTML = html;
+  previewEl.classList.remove('hidden');
+
+  // Update badge on attach button
+  const attachBtn = document.getElementById('attach-btn');
+  let badgeEl = attachBtn.querySelector('.file-count-badge');
+  if (!badgeEl) {
+    badgeEl = document.createElement('span');
+    badgeEl.className = 'file-count-badge';
+    attachBtn.appendChild(badgeEl);
+  }
+  badgeEl.textContent = pendingFiles.length;
+}
+
+function removePendingFile(id) {
+  const idx = pendingFiles.findIndex(pf => pf.id === id);
+  if (idx === -1) return;
+  const pf = pendingFiles[idx];
+  if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
+  pendingFiles.splice(idx, 1);
+  renderFilePreview();
+}
+
+function clearPendingFiles() {
+  for (const pf of pendingFiles) {
+    if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
+  }
+  pendingFiles = [];
+  renderFilePreview();
+}
+
+function handlePaste(event) {
+  const items = event.clipboardData && event.clipboardData.items;
+  if (!items) return;
+  const files = [];
+  let hasText = false;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].kind === 'file') {
+      const f = items[i].getAsFile();
+      if (f) files.push(f);
+    } else if (items[i].kind === 'string' && items[i].type === 'text/plain') {
+      hasText = true;
+    }
+  }
+  if (files.length > 0) {
+    event.preventDefault();
+    handleFileSelect(files);
+    // Preserve pasted text by inserting it into the input
+    if (hasText) {
+      const plainText = event.clipboardData.getData('text/plain');
+      if (plainText) {
+        const input = document.getElementById('msg-input');
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        input.value = input.value.slice(0, start) + plainText + input.value.slice(end);
+        input.selectionStart = input.selectionEnd = start + plainText.length;
+        autoGrow(input);
+      }
+    }
+  }
+}
+
+async function uploadAllFiles(files) {
+  const chips = document.querySelectorAll('.file-chip');
+  const concurrency = 3;
+  const results = new Array(files.length);
+  let nextIdx = 0;
+
+  async function worker() {
+    while (nextIdx < files.length) {
+      const i = nextIdx++;
+      const pf = files[i];
+      const chip = chips[i];
+      // Show spinner overlay
+      if (chip) {
+        const overlay = document.createElement('div');
+        overlay.className = 'file-chip-status';
+        overlay.innerHTML = '<div class="file-chip-spinner"></div>';
+        chip.appendChild(overlay);
+      }
+
+      try {
+        const result = await uploadFile(pf.file);
+        // Show success
+        if (chip) {
+          const overlay = chip.querySelector('.file-chip-status');
+          if (overlay) overlay.innerHTML = '&#10003;';
+        }
+        results[i] = { success: true, result, pf };
+      } catch (err) {
+        // Show error
+        if (chip) {
+          const overlay = chip.querySelector('.file-chip-status');
+          if (overlay) { overlay.innerHTML = '!'; overlay.title = err.message; }
+        }
+        results[i] = { success: false, error: err, pf };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, () => worker()));
+  return results;
 }
 
 // ===== Upload =====
@@ -2341,7 +2580,7 @@ function closeLightbox() {
     if (container.querySelector('.drag-overlay')) return;
     const overlay = document.createElement('div');
     overlay.className = 'drag-overlay';
-    overlay.innerHTML = '<div class="drag-overlay-text">Drop file to attach</div>';
+    overlay.innerHTML = '<div class="drag-overlay-text">Drop files to attach</div>';
     container.appendChild(overlay);
   }
 
@@ -2356,29 +2595,53 @@ function closeLightbox() {
 function sendMessage() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
-  const hasFile = !!pendingFile;
+  const hasFiles = pendingFiles.length > 0;
 
-  if (!text && !hasFile) return;
+  if (!text && !hasFiles) return;
   if (!httpBaseUrl) return;
 
-  if (hasFile) {
-    const file = pendingFile.file;
+  if (hasFiles) {
+    const files = [...pendingFiles]; // snapshot
     const caption = text;
-    clearPendingFile();
     input.value = '';
     input.style.height = 'auto';
 
-    const msgType = getMsgTypeFromMime(file.type);
-    addUserMediaMessage(msgType, file, caption, null);
+    addUserMediaMessage(files, caption);
+    setInputEnabled(false);
 
-    uploadFile(file).then(function(result) {
-      sseSendMessage(caption, msgType, {
-        fileName: result.fileName,
-        mimeType: result.mimeType,
-        fileSize: result.fileSize,
-        downloadUrl: result.downloadUrl,
-      });
+    uploadAllFiles(files).then(function(outcomes) {
+      clearPendingFiles();
+
+      const succeeded = outcomes.filter(o => o.success);
+      const failed = outcomes.filter(o => !o.success);
+
+      if (failed.length > 0) {
+        const names = failed.map(o => o.pf.file.name).join(', ');
+        addSystemMessage(`Upload failed for: ${names}`, true);
+      }
+
+      if (succeeded.length === 0) {
+        addSystemMessage('All uploads failed. Message not sent.', true);
+        setInputEnabled(true);
+        return;
+      }
+
+      // Partial failure — ask user before sending
+      if (failed.length > 0) {
+        if (!confirm(`${failed.length} file(s) failed to upload. Send the remaining ${succeeded.length} file(s)?`)) {
+          setInputEnabled(true);
+          return;
+        }
+      }
+
+      const mediaItems = succeeded.map(o => ({
+        type: 'url',
+        content: o.result.downloadUrl,
+      }));
+
+      sseSendMessage(caption, mediaItems);
     }).catch(function(err) {
+      clearPendingFiles();
       addSystemMessage('File upload failed: ' + err.message, true);
       setInputEnabled(true);
     });
