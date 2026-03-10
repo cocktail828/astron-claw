@@ -70,9 +70,9 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const textParts: string[] = [];
   const mediaItems: any[] = [];
   for (const item of contentItems) {
-    if (item.type === "text" && item.text) {
-      textParts.push(item.text);
-    } else if (item.type === "media" && item.media) {
+    if (item.type === "text" && item.content) {
+      textParts.push(item.content);
+    } else if (item.type === "url" && item.content) {
       mediaItems.push(item);
     }
   }
@@ -89,8 +89,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const placeholders: string[] = [];
   const mediaDir = mediaItems.length > 0 ? await ensureInboundMediaDir() : "";
   for (const item of mediaItems) {
-    const mediaInfo = item.media;
-    const downloadUrl = mediaInfo?.downloadUrl;
+    const downloadUrl = item.content;
     if (!downloadUrl) continue;
 
     // Guard: only accept HTTP URLs (loadWebMedia has localRoots whitelist for local paths)

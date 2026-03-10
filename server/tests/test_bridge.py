@@ -70,7 +70,7 @@ class TestSendToBot:
         assert sent["method"] == "session/prompt"
         content_items = sent["params"]["prompt"]["content"]
         assert len(content_items) == 1
-        assert content_items[0] == {"type": "text", "text": "hello"}
+        assert content_items[0] == {"type": "text", "content": "hello"}
 
     async def test_send_to_bot_single_media(self, bridge, mock_queue):
         media_urls = ["http://localhost:9000/astron-claw-media/sid/photo.png"]
@@ -83,10 +83,9 @@ class TestSendToBot:
         content_items = sent["params"]["prompt"]["content"]
         assert len(content_items) == 2
         assert content_items[0]["type"] == "text"
-        assert content_items[0]["text"] == "my photo"
-        assert content_items[1]["type"] == "media"
-        assert content_items[1]["msgType"] == "file"
-        assert content_items[1]["media"]["downloadUrl"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
+        assert content_items[0]["content"] == "my photo"
+        assert content_items[1]["type"] == "url"
+        assert content_items[1]["content"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
 
     async def test_send_to_bot_multi_media(self, bridge, mock_queue):
         media_urls = [
@@ -100,9 +99,9 @@ class TestSendToBot:
         data = json.loads(payload_str)
         content_items = data["rpc_request"]["params"]["prompt"]["content"]
         assert len(content_items) == 3
-        assert content_items[0] == {"type": "text", "text": "compare these"}
-        assert content_items[1]["media"]["downloadUrl"].endswith("/photo1.jpg")
-        assert content_items[2]["media"]["downloadUrl"].endswith("/photo2.png")
+        assert content_items[0] == {"type": "text", "content": "compare these"}
+        assert content_items[1]["content"].endswith("/photo1.jpg")
+        assert content_items[2]["content"].endswith("/photo2.png")
 
     async def test_send_to_bot_media_only(self, bridge, mock_queue):
         """Media without text content should produce only media items."""
@@ -114,8 +113,8 @@ class TestSendToBot:
         data = json.loads(payload_str)
         content_items = data["rpc_request"]["params"]["prompt"]["content"]
         assert len(content_items) == 1
-        assert content_items[0]["type"] == "media"
-        assert content_items[0]["media"]["downloadUrl"].endswith("/voice.mp3")
+        assert content_items[0]["type"] == "url"
+        assert content_items[0]["content"].endswith("/voice.mp3")
 
     async def test_send_to_bot_unicode_url_encoded(self, bridge, mock_queue):
         """Unicode characters in media URL should be percent-encoded."""
@@ -126,7 +125,7 @@ class TestSendToBot:
         inbox_key, payload_str = mock_queue.publish.call_args[0]
         data = json.loads(payload_str)
         content_items = data["rpc_request"]["params"]["prompt"]["content"]
-        download_url = content_items[1]["media"]["downloadUrl"]
+        download_url = content_items[1]["content"]
         # Unicode should be percent-encoded
         assert "照片" not in download_url
         assert "%E7%85%A7%E7%89%87" in download_url
@@ -292,7 +291,7 @@ class TestSendToBotRemote:
         assert inbox_key == "bridge:bot_inbox:tok-1"
         data = json.loads(payload_str)
         assert data["rpc_request"]["method"] == "session/prompt"
-        assert data["rpc_request"]["params"]["prompt"]["content"][0]["text"] == "hello"
+        assert data["rpc_request"]["params"]["prompt"]["content"][0]["content"] == "hello"
 
 
 class TestBotStatusLogging:

@@ -678,7 +678,8 @@ POST /bridge/chat
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `type` | string | 是 | 媒体类型，目前仅支持 `"url"` |
-| `url` | string | 条件 | 媒体下载 URL（`type="url"` 时必填，仅 `http://` / `https://`） |
+| `content` | string | 是 | 主要值：URL / base64 数据 / S3 key（不能为空） |
+| `mimeType` | string | 否 | MIME 类型（仅 `type="base64"` 时需要） |
 
 **请求示例：**
 
@@ -687,11 +688,11 @@ POST /bridge/chat
 ```
 
 ```json
-{"content": "看看这张图", "sessionId": "550e8400-...", "media": [{"type": "url", "url": "http://host:9000/astron-claw-media/sid/photo.jpg"}]}
+{"content": "看看这张图", "sessionId": "550e8400-...", "media": [{"type": "url", "content": "http://host:9000/astron-claw-media/sid/photo.jpg"}]}
 ```
 
 ```json
-{"content": "对比这两张图", "media": [{"type": "url", "url": "http://host:9000/bucket/a.jpg"}, {"type": "url", "url": "http://host:9000/bucket/b.png"}]}
+{"content": "对比这两张图", "media": [{"type": "url", "content": "http://host:9000/bucket/a.jpg"}, {"type": "url", "content": "http://host:9000/bucket/b.png"}]}
 ```
 
 **响应：** `Content-Type: text/event-stream`
@@ -795,7 +796,7 @@ data: <json_data>
 | `thinking` | Bot 思考过程（流式） | `content` |
 | `tool_call` | Bot 调用工具 | `name`, `input` |
 | `tool_result` | 工具执行结果 | `name`, `status`, `content` |
-| `message` | Bot 发送的媒体消息 | `msgType`, `content`, `media` |
+| `media` | Bot 发送的媒体消息 | `type`, `content`, `caption`（可选） |
 | `done` | 本轮回复结束（**终止事件**） | `content` |
 | `error` | 错误（**终止事件**） | `content` |
 | `: heartbeat` | 心跳注释（15s 间隔），保持连接 | — |
@@ -819,6 +820,17 @@ data: {"content":"回复文本"}
 
 event: done
 data: {"content":"这是一段回复文本"}
+
+```
+
+**媒体事件示例：**
+
+```
+event: media
+data: {"type":"url","content":"http://host:9000/bucket/result.png"}
+
+event: media
+data: {"type":"url","content":"http://host:9000/bucket/doc.md","caption":"这是生成的文件"}
 
 ```
 
@@ -899,6 +911,9 @@ async function chat(token, message, sessionId) {
           case 'done':
             console.log('\n--- Reply complete ---');
             break;
+          case 'media':
+            console.log(`Media: ${data.content}`);
+            break;
           case 'error':
             console.error('Error:', data.content);
             break;
@@ -950,6 +965,8 @@ def chat_sse(token: str, message: str, session_id: str = None):
                 print(data["content"], end="", flush=True)
             elif event_type == "done":
                 print("\n--- Reply complete ---")
+            elif event_type == "media":
+                print(f"\nMedia: {data['content']}")
             elif event_type == "error":
                 print(f"\nError: {data['content']}")
 
@@ -1028,8 +1045,8 @@ Token 支持两种传递方式（二选一）：
 
 | type | 字段 | 说明 |
 |------|------|------|
-| `text` | `text` | 文本内容 |
-| `media` | `msgType`, `media` | 媒体内容（`msgType` 固定为 `"file"`，`media` 仅含 `downloadUrl`） |
+| `text` | `content` | 文本内容 |
+| `url` | `content` | 媒体下载 URL |
 
 **文本消息示例：**
 
@@ -1042,7 +1059,7 @@ Token 支持两种传递方式（二选一）：
     "sessionId": "550e8400-e29b-41d4-a716-446655440000",
     "prompt": {
       "content": [
-        {"type": "text", "text": "你好，请帮我写一段代码"}
+        {"type": "text", "content": "你好，请帮我写一段代码"}
       ]
     }
   }
@@ -1060,14 +1077,8 @@ Token 支持两种传递方式（二选一）：
     "sessionId": "550e8400-e29b-41d4-a716-446655440000",
     "prompt": {
       "content": [
-        {"type": "text", "text": "看看这张图"},
-        {
-          "type": "media",
-          "msgType": "file",
-          "media": {
-            "downloadUrl": "http://host:9000/astron-claw-media/sid/photo.jpg"
-          }
-        }
+        {"type": "text", "content": "看看这张图"},
+        {"type": "url", "content": "http://host:9000/astron-claw-media/sid/photo.jpg"}
       ]
     }
   }
@@ -1085,28 +1096,16 @@ Token 支持两种传递方式（二选一）：
     "sessionId": "550e8400-e29b-41d4-a716-446655440000",
     "prompt": {
       "content": [
-        {"type": "text", "text": "对比这两张图"},
-        {
-          "type": "media",
-          "msgType": "file",
-          "media": {
-            "downloadUrl": "http://host:9000/astron-claw-media/sid/a.jpg"
-          }
-        },
-        {
-          "type": "media",
-          "msgType": "file",
-          "media": {
-            "downloadUrl": "http://host:9000/astron-claw-media/sid/b.png"
-          }
-        }
+        {"type": "text", "content": "对比这两张图"},
+        {"type": "url", "content": "http://host:9000/astron-claw-media/sid/a.jpg"},
+        {"type": "url", "content": "http://host:9000/astron-claw-media/sid/b.png"}
       ]
     }
   }
 }
 ```
 
-> **注意：** `msgType` 固定为 `"file"`，Bot 端应根据下载后的实际 MIME 类型判断媒体类别（图片/音频/视频/文件）。`media` 对象只包含 `downloadUrl`，不再传递 `fileName`/`mimeType`/`fileSize`。
+> **注意：** 所有 content item 统一使用 `{type, content}` 二元结构。Bot 端应根据下载后的实际 MIME 类型判断媒体类别（图片/音频/视频/文件）。
 
 ---
 
@@ -1137,7 +1136,7 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 | `agent_thought_chunk` | Bot 思考过程片段 | `thinking` |
 | `tool_call` | 工具调用（含 title/status/content 字段） | `tool_call` |
 | `tool_result` | 工具执行结果（含 title/status/content 字段） | `tool_result` |
-| `agent_media` | Bot 发送媒体文件 | `message`（含 media 对象） |
+| `agent_media` | Bot 发送媒体文件 | `media`（含 `{type, content, caption?}`） |
 
 **回复文本片段示例：**
 
@@ -1245,7 +1244,7 @@ async def bot(token: str):
                 continue
 
             request_id = msg["id"]
-            user_text = msg["params"]["prompt"]["content"][0]["text"]
+            user_text = msg["params"]["prompt"]["content"][0]["content"]
             print(f"User: {user_text}")
 
             # 发送思考过程（可选）

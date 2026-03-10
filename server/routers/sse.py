@@ -23,11 +23,16 @@ _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 # ---------------------------------------------------------------------------
 
 class MediaItem(BaseModel):
-    type: str           # "url" | "base64" | "s3_key" (only "url" implemented now)
-    url: str = ""       # type="url"
-    data: str = ""      # type="base64" (reserved)
-    mimeType: str = ""  # type="base64" (reserved)
-    key: str = ""       # type="s3_key" (reserved)
+    type: str            # "url" | "base64" | "s3_key" (only "url" implemented now)
+    content: str         # primary value: URL / base64 data / S3 key
+    mimeType: str = ""   # required only for type="base64"
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Media item content must not be empty")
+        return v
 
 
 class ChatRequest(BaseModel):
@@ -154,7 +159,17 @@ async def _stream_response(
                 continue
 
             event_type = event.pop("type", "message")
-            yield _sse_event(event_type, event)
+
+            # For media events, the payload is nested under "data" key
+            # so that SSE data contains only {type, content} without the event type
+            if event_type == "media":
+                event_data = event.pop("data", None)
+                if not event_data:
+                    logger.warning("SSE: media event missing data payload (token={}...)", token[:10])
+                    continue
+            else:
+                event_data = event
+            yield _sse_event(event_type, event_data)
 
             # Terminal events — close the stream
             if event_type in ("done", "error"):
@@ -212,12 +227,12 @@ async def chat_sse(
     if body.media:
         for item in body.media:
             if item.type == "url":
-                if not item.url.startswith(("http://", "https://")):
+                if not item.content.startswith(("http://", "https://")):
                     return JSONResponse(
                         status_code=400,
-                        content={"ok": False, "error": f"Invalid media URL scheme: {item.url}"},
+                        content={"ok": False, "error": f"Invalid media URL scheme: {item.content}"},
                     )
-                media_urls.append(item.url)
+                media_urls.append(item.content)
             else:
                 return JSONResponse(
                     status_code=400,

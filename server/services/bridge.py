@@ -250,15 +250,11 @@ class ConnectionBridge:
         content_items = []
 
         if user_message:
-            content_items.append({"type": "text", "text": user_message})
+            content_items.append({"type": "text", "content": user_message})
 
         for url in (media_urls or []):
             encoded_url = _ensure_encoded_url(url)
-            content_items.append({
-                "type": "media",
-                "msgType": "file",
-                "media": {"downloadUrl": encoded_url},
-            })
+            content_items.append({"type": "url", "content": encoded_url})
 
         if not content_items:
             logger.error("send_to_bot called with empty content (token={}...)", token[:10])
@@ -487,17 +483,15 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
 
         if update_type == "agent_media":
             media = content.get("media", {})
-            return {
-                "type": "message",
-                "msgType": content.get("msgType", "file"),
-                "content": content.get("text", ""),
-                "media": {
-                    "fileName": media.get("fileName", ""),
-                    "mimeType": media.get("mimeType", ""),
-                    "fileSize": media.get("fileSize", 0),
-                    "downloadUrl": media.get("downloadUrl", ""),
-                },
-            }
+            download_url = media.get("downloadUrl", "")
+            if not download_url:
+                logger.warning("agent_media event missing downloadUrl")
+                return None
+            data: dict = {"type": "url", "content": download_url}
+            caption = content.get("text", "")
+            if caption:
+                data["caption"] = caption
+            return {"type": "media", "data": data}
 
         if isinstance(content, dict) and "text" in content:
             logger.debug("Bot event fallback to chunk: sessionUpdate={} (unknown type)", update_type)

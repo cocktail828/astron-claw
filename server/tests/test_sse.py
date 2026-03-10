@@ -8,6 +8,23 @@ import pytest
 from routers.sse import _authenticate, _resolve_session, _sse_event, _sse_comment, MediaItem
 
 
+# ── MediaItem validation ───────────────────────────────────────────────────
+
+
+class TestMediaItemValidation:
+    def test_empty_content_rejected(self):
+        with pytest.raises(Exception):
+            MediaItem(type="url", content="")
+
+    def test_whitespace_content_rejected(self):
+        with pytest.raises(Exception):
+            MediaItem(type="url", content="   ")
+
+    def test_valid_content_accepted(self):
+        item = MediaItem(type="url", content="http://example.com/file.jpg")
+        assert item.content == "http://example.com/file.jpg"
+
+
 # ── Pure helpers ─────────────────────────────────────────────────────────────
 
 
@@ -146,7 +163,7 @@ class TestChatSseEndpoint:
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(
             content="hello",
-            media=[MediaItem(type="base64", data="abc", mimeType="image/png")],
+            media=[MediaItem(type="base64", content="abc", mimeType="image/png")],
         )
         resp = await chat_sse(body, authorization="Bearer sk-valid")
         assert resp.status_code == 400
@@ -156,7 +173,7 @@ class TestChatSseEndpoint:
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(
             content="hello",
-            media=[MediaItem(type="url", url="ftp://bad/file.jpg")],
+            media=[MediaItem(type="url", content="ftp://bad/file.jpg")],
         )
         resp = await chat_sse(body, authorization="Bearer sk-valid")
         assert resp.status_code == 400
@@ -208,7 +225,7 @@ class TestChatSseEndpoint:
         """Media-only message (no text) should be accepted."""
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(
-            media=[MediaItem(type="url", url="http://host:9000/file.mp3")],
+            media=[MediaItem(type="url", content="http://host:9000/file.mp3")],
         )
         resp = await chat_sse(body, authorization="Bearer sk-valid")
         assert resp.media_type == "text/event-stream"
@@ -222,8 +239,8 @@ class TestChatSseEndpoint:
             content="compare",
             sessionId="sid-1",
             media=[
-                MediaItem(type="url", url="http://host:9000/a.jpg"),
-                MediaItem(type="url", url="http://host:9000/b.png"),
+                MediaItem(type="url", content="http://host:9000/a.jpg"),
+                MediaItem(type="url", content="http://host:9000/b.png"),
             ],
         )
         resp = await chat_sse(body, authorization="Bearer sk-valid")

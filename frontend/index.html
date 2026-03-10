@@ -1851,7 +1851,7 @@ async function sseSendMessage(content, mediaItems) {
           }
 
           // Map SSE event to handleServerMessage format
-          handleServerMessage({ type: eventType, ...data });
+          handleServerMessage({ ...data, type: eventType });
 
           if (eventType === 'done' || eventType === 'error') {
             return;
@@ -1911,7 +1911,7 @@ function handleServerMessage(msg) {
     case 'bot_status':
       handleBotStatus(msg.connected);
       break;
-    case 'message':
+    case 'media':
       handleMediaMessage(msg);
       break;
     default:
@@ -2101,9 +2101,12 @@ function handleBotStatus(connected) {
 
 function handleMediaMessage(msg) {
   finalizeStream();
-  const msgType = msg.msgType || 'file';
-  const media = msg.media;
-  const caption = msg.content || '';
+  const url = msg.content || '';
+  if (!url) return;
+
+  const caption = msg.caption || '';
+  // Infer media type from URL extension
+  const msgType = inferMsgTypeFromUrl(url);
 
   const list = document.getElementById('messages-list');
   const msgDiv = document.createElement('div');
@@ -2112,9 +2115,7 @@ function handleMediaMessage(msg) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
 
-  if (media && media.downloadUrl) {
-    bubble.innerHTML = renderMediaContent(msgType, media);
-  }
+  bubble.innerHTML = renderMediaContent(msgType, url);
 
   if (caption) {
     bubble.innerHTML += `<div class="media-caption">${renderMarkdown(caption)}</div>`;
@@ -2268,11 +2269,6 @@ function getHttpBaseUrl() {
   return httpBaseUrl;
 }
 
-function getMediaUrl(downloadUrl) {
-  // downloadUrl is a full S3 public URL — use directly
-  return downloadUrl;
-}
-
 function formatFileSize(bytes) {
   if (!bytes || bytes === 0) return '';
   if (bytes < 1024) return bytes + ' B';
@@ -2288,25 +2284,56 @@ function getMsgTypeFromMime(mimeType) {
   return 'file';
 }
 
-function renderMediaContent(msgType, media) {
-  const url = getMediaUrl(media.downloadUrl);
-  const fileName = escapeHtml(media.fileName || 'file');
-  const fileSize = formatFileSize(media.fileSize);
+function extractFileNameFromUrl(url) {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split('/').pop() || 'file');
+  } catch {
+    return 'file';
+  }
+}
+
+const EXT_MIME_MAP = {
+  'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif',
+  'webp': 'image/webp', 'bmp': 'image/bmp', 'svg': 'image/svg+xml', 'ico': 'image/x-icon',
+  'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'ogg': 'audio/ogg', 'aac': 'audio/aac',
+  'flac': 'audio/flac', 'm4a': 'audio/mp4', 'wma': 'audio/x-ms-wma',
+  'mp4': 'video/mp4', 'webm': 'video/webm', 'mkv': 'video/x-matroska',
+  'avi': 'video/x-msvideo', 'mov': 'video/quicktime', 'wmv': 'video/x-ms-wmv',
+};
+
+function inferMimeTypeFromUrl(url) {
+  try {
+    const ext = new URL(url).pathname.split('.').pop().toLowerCase();
+    return EXT_MIME_MAP[ext] || '';
+  } catch { return ''; }
+}
+
+function inferMsgTypeFromUrl(url) {
+  const mime = inferMimeTypeFromUrl(url);
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+function renderMediaContent(msgType, url) {
+  const rawFileName = extractFileNameFromUrl(url);
+  const fileName = escapeHtml(rawFileName);
   const safeUrl = url.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  const mimeType = inferMimeTypeFromUrl(url);
 
   switch (msgType) {
     case 'image':
       return `<img class="media-image" src="${safeUrl}" alt="${fileName}" onclick="openLightbox(this.src)" loading="lazy">`;
     case 'audio':
-      return `<audio class="media-audio" controls preload="none"><source src="${safeUrl}" type="${escapeHtml(media.mimeType || '')}">Your browser does not support audio.</audio>`;
+      return `<audio class="media-audio" controls preload="none"><source src="${safeUrl}"${mimeType ? ` type="${mimeType}"` : ''}>Your browser does not support audio.</audio>`;
     case 'video':
-      return `<video class="media-video" controls preload="metadata"><source src="${safeUrl}" type="${escapeHtml(media.mimeType || '')}">Your browser does not support video.</video>`;
+      return `<video class="media-video" controls preload="metadata"><source src="${safeUrl}"${mimeType ? ` type="${mimeType}"` : ''}>Your browser does not support video.</video>`;
     default:
       return `<div class="media-file-card">
         <span class="media-file-icon">&#128196;</span>
         <div class="media-file-info">
           <div class="media-file-name">${fileName}</div>
-          ${fileSize ? '<div class="media-file-size">' + fileSize + '</div>' : ''}
         </div>
         <a class="media-file-download" href="${safeUrl}" download="${fileName}" title="Download">&#8595;</a>
       </div>`;
@@ -2609,7 +2636,7 @@ function sendMessage() {
 
       const mediaItems = succeeded.map(o => ({
         type: 'url',
-        url: o.result.downloadUrl,
+        content: o.result.downloadUrl,
       }));
 
       sseSendMessage(caption, mediaItems);
