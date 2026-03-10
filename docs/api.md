@@ -386,19 +386,33 @@ print(resp.json())  # {'ok': True}
 
 ### 3.1 获取 Token 列表
 
-返回所有未过期的 Token 及其连接状态。
+返回所有未过期的 Token 及其连接状态，支持分页、搜索、排序和过滤。
 
 ```
 GET /api/admin/tokens
 ```
 
-**请求参数：** 无
+**查询参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `page` | integer | `1` | 页码（≥1） |
+| `page_size` | integer | `20` | 每页条数（1-100） |
+| `search` | string | `""` | 按 Token 值或名称模糊搜索 |
+| `sort_by` | string | `"created_at"` | 排序字段：`created_at` \| `bot_online` |
+| `sort_order` | string | `"desc"` | 排序方向：`asc` \| `desc` |
+| `bot_status` | string | `""` | Bot 状态过滤：`""` 全部 \| `"online"` 仅在线 |
 
 **响应：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `tokens` | array | Token 列表 |
+| `tokens` | array | 当前页 Token 列表 |
+| `total` | integer | 过滤后的 Token 总数 |
+| `page` | integer | 当前页码 |
+| `page_size` | integer | 每页条数 |
+| `online_bots` | integer | 全局在线 Bot 数量（不受过滤影响） |
+| `total_tokens` | integer | 全局 Token 总数（不受过滤影响） |
 
 **Token 对象结构：**
 
@@ -409,7 +423,6 @@ GET /api/admin/tokens
 | `created_at` | number | 创建时间（Unix 时间戳，秒） |
 | `expires_at` | number | 过期时间（Unix 时间戳，秒；永不过期时为 `9999999999`） |
 | `bot_online` | boolean | Bot 是否在线 |
-| `chat_count` | integer | 当前 Chat 连接数 |
 
 **响应示例：**
 
@@ -421,24 +434,36 @@ GET /api/admin/tokens
       "name": "Production Bot",
       "created_at": 1709280000.0,
       "expires_at": 1709366400.0,
-      "bot_online": true,
-      "chat_count": 2
+      "bot_online": true
     }
-  ]
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20,
+  "online_bots": 1,
+  "total_tokens": 5
 }
 ```
 
 **测试代码：**
 
 ```bash
+# 默认分页
 curl http://127.0.0.1:8765/api/admin/tokens -b cookies.txt
+
+# 搜索 + 仅在线 Bot
+curl "http://127.0.0.1:8765/api/admin/tokens?search=prod&bot_status=online&page=1&page_size=10" -b cookies.txt
 ```
 
 ```python
-resp = session.get("http://127.0.0.1:8765/api/admin/tokens")
-for t in resp.json()["tokens"]:
+resp = session.get("http://127.0.0.1:8765/api/admin/tokens", params={
+    "page": 1, "page_size": 10, "sort_by": "bot_online", "sort_order": "desc"
+})
+data = resp.json()
+print(f"Page {data['page']}/{-(-data['total']//data['page_size'])} | Online: {data['online_bots']}/{data['total_tokens']}")
+for t in data["tokens"]:
     status = "online" if t["bot_online"] else "offline"
-    print(f"{t['token'][:10]}... | Bot: {status} | Chats: {t['chat_count']}")
+    print(f"  {t['token'][:10]}... | Bot: {status}")
 ```
 
 ---
@@ -615,12 +640,12 @@ POST /api/admin/cleanup
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `removed_tokens` | integer | 已删除的过期 Token 数量 |
-| `removed_media` | integer | 已删除的过期媒体文件数量 |
+| `removed_sessions` | integer | 已清理的过期会话数量（超过 30 天） |
 
 **响应示例：**
 
 ```json
-{"removed_tokens": 3, "removed_media": 5}
+{"removed_tokens": 3, "removed_sessions": 5}
 ```
 
 **测试代码：**
@@ -631,7 +656,7 @@ curl -X POST http://127.0.0.1:8765/api/admin/cleanup -b cookies.txt
 
 ```python
 resp = session.post("http://127.0.0.1:8765/api/admin/cleanup")
-print(f"Removed {resp.json()['removed_tokens']} tokens, {resp.json()['removed_media']} media files")
+print(f"Removed {resp.json()['removed_tokens']} tokens, {resp.json()['removed_sessions']} sessions")
 ```
 
 ---
@@ -697,7 +722,7 @@ POST /bridge/chat
 
 **响应：** `Content-Type: text/event-stream`
 
-成功时返回 SSE 事件流（详见 [4A.4 SSE 事件类型](#4a4-sse-事件类型)）。
+成功时返回 SSE 事件流（详见 [4.4 SSE 事件类型](#44-sse-事件类型)）。
 
 **错误响应（JSON）：**
 
@@ -1026,6 +1051,7 @@ Token 支持两种传递方式（二选一）：
 | `4000` | 服务重启（graceful shutdown） |
 | `4001` | Token 无效或已过期 |
 | `4002` | 该 Token 已有另一个 Bot 在线（每个 Token 只允许 1 个 Bot） |
+| `4003` | Token 被管理员删除（强制断开） |
 
 ---
 
@@ -1443,6 +1469,7 @@ print(data["status"])  # "ok" or "degraded"
 | `4000` | 服务重启（自定义关闭码，graceful shutdown 时发送） |
 | `4001` | Token 无效或已过期 |
 | `4002` | 该 Token 已有 Bot 在线（仅 `/bridge/bot`） |
+| `4003` | Token 被管理员删除（仅 `/bridge/bot`） |
 
 **客户端重连建议：**
 
@@ -1451,4 +1478,5 @@ print(data["status"])  # "ok" or "degraded"
 | `4000` / `1012` | 重置重试计数器，立即快速重连 |
 | `4001` | 停止重试，返回登录/Token 输入页 |
 | `4002` | 停止重试，提示用户已有 Bot 在线 |
+| `4003` | 停止重试，提示 Token 已被删除 |
 | 其他 | 指数退避重连 |
