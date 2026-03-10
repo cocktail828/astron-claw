@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from infra.log import logger
 import services.state as state
@@ -22,11 +22,25 @@ _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 # Request / response models
 # ---------------------------------------------------------------------------
 
+class MediaItem(BaseModel):
+    type: str           # "url" | "base64" | "s3_key" (only "url" implemented now)
+    url: str = ""       # type="url"
+    data: str = ""      # type="base64" (reserved)
+    mimeType: str = ""  # type="base64" (reserved)
+    key: str = ""       # type="s3_key" (reserved)
+
+
 class ChatRequest(BaseModel):
     content: str = ""
     sessionId: Optional[str] = None
-    msgType: str = "text"
-    media: Optional[dict] = None
+    media: Optional[list[MediaItem]] = None
+
+    @field_validator("media")
+    @classmethod
+    def validate_media(cls, v):
+        if v is not None and len(v) > 10:
+            raise ValueError("Too many media items (max 10)")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -191,20 +205,29 @@ async def chat_sse(
             content={"ok": False, "error": "Invalid or missing token"},
         )
 
-    # Validate message content
-    msg_type = body.msgType or "text"
+    # Validate message content — normalize media URLs
     content = body.content or ""
+    media_urls: list[str] = []
 
-    if msg_type == "text" and not content:
+    if body.media:
+        for item in body.media:
+            if item.type == "url":
+                if not item.url.startswith(("http://", "https://")):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"ok": False, "error": f"Invalid media URL scheme: {item.url}"},
+                    )
+                media_urls.append(item.url)
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={"ok": False, "error": f"Unsupported media type: {item.type}"},
+                )
+
+    if not content and not media_urls:
         return JSONResponse(
             status_code=400,
             content={"ok": False, "error": "Empty message"},
-        )
-
-    if msg_type in ("image", "file", "audio", "video") and not body.media:
-        return JSONResponse(
-            status_code=400,
-            content={"ok": False, "error": f"Missing media info for type: {msg_type}"},
         )
 
     # Check bot connected
@@ -232,8 +255,7 @@ async def chat_sse(
     # Send message to bot via Redis Stream inbox
     req_id = await state.bridge.send_to_bot(
         token, content,
-        msg_type=msg_type,
-        media=body.media,
+        media_urls=media_urls or None,
         session_id=session_id,
     )
     if not req_id:
