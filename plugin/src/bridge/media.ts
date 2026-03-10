@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ResolvedAccount } from "../types.js";
 
 // ---------------------------------------------------------------------------
-// Bridge REST API client (for media upload/download)
+// Bridge REST API client (for media upload)
 // ---------------------------------------------------------------------------
 
 export function getBridgeHttpBaseUrl(wsUrl: string): string {
@@ -16,31 +16,12 @@ export function getBridgeHttpBaseUrl(wsUrl: string): string {
   }
 }
 
-export async function downloadMediaFromBridge(
-  account: ResolvedAccount,
-  mediaId: string,
-): Promise<{ buffer: Buffer; contentType: string; fileName: string }> {
-  const baseUrl = getBridgeHttpBaseUrl(account.bridge.url);
-  const url = `${baseUrl}/api/media/download/${encodeURIComponent(mediaId)}`;
-
-  const headers: Record<string, string> = {};
-  if (account.bridge.token) {
-    headers["Authorization"] = `Bearer ${account.bridge.token}`;
-  }
-
-  const res = await fetch(url, { headers });
-  if (!res.ok) {
-    throw new Error(`Media download failed: ${res.status} ${res.statusText}`);
-  }
-
-  const contentType = res.headers.get("content-type") ?? "application/octet-stream";
-  const disposition = res.headers.get("content-disposition") ?? "";
-  let fileName = `media_${mediaId}`;
-  const match = disposition.match(/filename[*]?=(?:UTF-8''|"?)([^";]+)/i);
-  if (match) fileName = decodeURIComponent(match[1]);
-
-  const buffer = Buffer.from(await res.arrayBuffer());
-  return { buffer, contentType, fileName };
+export interface UploadResult {
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  sessionId: string;
+  downloadUrl: string;
 }
 
 export async function uploadMediaToBridge(
@@ -48,7 +29,8 @@ export async function uploadMediaToBridge(
   buffer: Buffer,
   fileName: string,
   contentType: string,
-): Promise<any> {
+  sessionId?: string,
+): Promise<UploadResult> {
   const baseUrl = getBridgeHttpBaseUrl(account.bridge.url);
   const url = `${baseUrl}/api/media/upload`;
 
@@ -57,14 +39,33 @@ export async function uploadMediaToBridge(
 
   // Build multipart body manually to avoid external dependency
   const parts: string[] = [];
+
+  // File part — escape filename for Content-Disposition (RFC 6266)
+  const safeFileName = fileName
+    .replace(/[\r\n]/g, "")            // strip CR/LF to prevent header injection
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
   parts.push(`--${boundary}${CRLF}`);
-  parts.push(`Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}`);
+  parts.push(`Content-Disposition: form-data; name="file"; filename="${safeFileName}"${CRLF}`);
   parts.push(`Content-Type: ${contentType}${CRLF}`);
   parts.push(CRLF);
 
   const header = Buffer.from(parts.join(""), "utf8");
+
+  // sessionId part (if provided)
+  let sessionPart = Buffer.alloc(0);
+  if (sessionId) {
+    const sp = [
+      `${CRLF}--${boundary}${CRLF}`,
+      `Content-Disposition: form-data; name="sessionId"${CRLF}`,
+      CRLF,
+      sessionId,
+    ].join("");
+    sessionPart = Buffer.from(sp, "utf8");
+  }
+
   const footer = Buffer.from(`${CRLF}--${boundary}--${CRLF}`, "utf8");
-  const body = Buffer.concat([header, buffer, footer]);
+  const body = Buffer.concat([header, buffer, sessionPart, footer]);
 
   const headers: Record<string, string> = {
     "Content-Type": `multipart/form-data; boundary=${boundary}`,
@@ -78,8 +79,7 @@ export async function uploadMediaToBridge(
     throw new Error(`Media upload failed: ${res.status} ${res.statusText}`);
   }
 
-  const result = await res.json();
-  return result; // { mediaId, url, type }
+  return await res.json() as UploadResult;
 }
 
 // ---------------------------------------------------------------------------

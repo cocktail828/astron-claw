@@ -1,43 +1,45 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 
-import { downloadMediaFromBridge } from "../bridge/media.js";
-import { getRuntime } from "../runtime.js";
-import type { ResolvedAccount, MessageHandler, HandleResult, MediaItem } from "../types.js";
+import { loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
+
+import { logger } from "../runtime.js";
+import type { MessageHandler, MediaItem } from "../types.js";
+import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
 
 // ---------------------------------------------------------------------------
 // Common media download + save logic (deduplicates image/audio/video/file)
+// Uses loadWebMedia (S3 public URL) + local writeFile to SDK convention path
 // ---------------------------------------------------------------------------
 async function downloadAndSaveMedia(
-  account: ResolvedAccount,
-  mediaId: string,
+  downloadUrl: string,
   fileNameOverride?: string,
 ): Promise<{ savedPath: string; buffer: Buffer; contentType: string; fileName: string }> {
-  const { buffer, contentType, fileName: rawFileName } = await downloadMediaFromBridge(account, mediaId);
-  const fileName = fileNameOverride ?? rawFileName;
-
-  const rt = getRuntime();
-  let savedPath: string;
-  if (rt?.media?.saveMediaLocally) {
-    savedPath = await rt.media.saveMediaLocally(buffer, { contentType, fileName });
-  } else {
-    // Fallback: save to temp directory
-    const dir = join(tmpdir(), "astron-claw-media");
-    mkdirSync(dir, { recursive: true });
-    savedPath = join(dir, `${randomUUID()}_${fileName}`);
-    writeFileSync(savedPath, buffer);
+  // Guard: only accept HTTP URLs
+  if (!downloadUrl.startsWith("http")) {
+    throw new Error(`Invalid downloadUrl (expected HTTP URL): ${downloadUrl}`);
   }
 
-  return { savedPath, buffer, contentType, fileName };
+  const loaded = await loadWebMedia(downloadUrl);
+  const contentType = loaded.contentType ?? "application/octet-stream";
+  const fileName = fileNameOverride ?? loaded.fileName ?? "file";
+
+  const ext = extensionForMime(contentType) || ".bin";
+  const mediaDir = await ensureInboundMediaDir();
+  const uuid = randomUUID();
+  const savedName = buildMediaFileName(fileName, uuid, ext);
+  const savedPath = join(mediaDir, savedName);
+  await writeFile(savedPath, loaded.buffer);
+
+  return { savedPath, buffer: loaded.buffer, contentType, fileName };
 }
 
 // ---------------------------------------------------------------------------
-// Helper: extract mediaId from data
+// Helper: extract downloadUrl from data
 // ---------------------------------------------------------------------------
-function extractMediaId(data: any): string | undefined {
-  return data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+function extractDownloadUrl(data: any): string | undefined {
+  return data.content?.downloadUrl ?? data.media?.downloadUrl ?? data.downloadUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,15 +69,16 @@ export const imageMessageHandler: MessageHandler = {
   canHandle: (data) => data.msgType === "image" || data.msgType === "picture",
   getPreview: (_data) => "[Image]",
   validate: (data) => {
-    const mediaId = extractMediaId(data);
-    if (!mediaId) {
-      return { valid: false, errorMessage: "No media ID for image" };
+    const url = extractDownloadUrl(data);
+    if (!url) {
+      return { valid: false, errorMessage: "No download URL for image" };
     }
     return { valid: true };
   },
-  handle: async (data, account) => {
-    const mediaId = extractMediaId(data)!;
-    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(account, mediaId);
+  handle: async (data, _account) => {
+    const url = extractDownloadUrl(data);
+    if (!url) throw new Error("No download URL for image");
+    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(url);
 
     const mediaItem: MediaItem = {
       path: savedPath,
@@ -86,7 +89,7 @@ export const imageMessageHandler: MessageHandler = {
 
     const text = data.text ?? data.content?.text ?? "";
     return {
-      text: text || "[Image]",
+      text: text || "<media:image>",
       media: { items: [mediaItem], primary: mediaItem },
     };
   },
@@ -99,15 +102,16 @@ export const audioMessageHandler: MessageHandler = {
     return duration ? `[Audio ${duration}s]` : "[Audio]";
   },
   validate: (data) => {
-    const mediaId = extractMediaId(data);
-    if (!mediaId) {
-      return { valid: false, errorMessage: "No media ID for audio" };
+    const url = extractDownloadUrl(data);
+    if (!url) {
+      return { valid: false, errorMessage: "No download URL for audio" };
     }
     return { valid: true };
   },
-  handle: async (data, account) => {
-    const mediaId = extractMediaId(data)!;
-    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(account, mediaId);
+  handle: async (data, _account) => {
+    const url = extractDownloadUrl(data);
+    if (!url) throw new Error("No download URL for audio");
+    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(url);
 
     const duration = data.content?.duration ?? null;
     const transcript = data.content?.recognition ?? data.content?.transcript ?? null;
@@ -122,7 +126,7 @@ export const audioMessageHandler: MessageHandler = {
 
     let text = data.text ?? "";
     if (transcript) text = transcript;
-    if (!text) text = "[Audio]";
+    if (!text) text = "<media:audio>";
 
     return {
       text,
@@ -139,15 +143,16 @@ export const videoMessageHandler: MessageHandler = {
     return duration ? `[Video ${duration}s]` : "[Video]";
   },
   validate: (data) => {
-    const mediaId = extractMediaId(data);
-    if (!mediaId) {
-      return { valid: false, errorMessage: "No media ID for video" };
+    const url = extractDownloadUrl(data);
+    if (!url) {
+      return { valid: false, errorMessage: "No download URL for video" };
     }
     return { valid: true };
   },
-  handle: async (data, account) => {
-    const mediaId = extractMediaId(data)!;
-    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(account, mediaId);
+  handle: async (data, _account) => {
+    const url = extractDownloadUrl(data);
+    if (!url) throw new Error("No download URL for video");
+    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(url);
 
     const duration = data.content?.duration ?? null;
 
@@ -159,7 +164,7 @@ export const videoMessageHandler: MessageHandler = {
       duration,
     };
 
-    const text = data.text ?? "[Video]";
+    const text = data.text ?? "<media:video>";
     return {
       text,
       media: { items: [mediaItem], primary: mediaItem },
@@ -175,16 +180,17 @@ export const fileMessageHandler: MessageHandler = {
     return `[File: ${name}]`;
   },
   validate: (data) => {
-    const mediaId = extractMediaId(data);
-    if (!mediaId) {
-      return { valid: false, errorMessage: "No media ID for file" };
+    const url = extractDownloadUrl(data);
+    if (!url) {
+      return { valid: false, errorMessage: "No download URL for file" };
     }
     return { valid: true };
   },
-  handle: async (data, account) => {
-    const mediaId = extractMediaId(data)!;
+  handle: async (data, _account) => {
+    const url = extractDownloadUrl(data);
+    if (!url) throw new Error("No download URL for file");
     const realFileName = data.content?.fileName ?? data.content?.name ?? undefined;
-    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(account, mediaId, realFileName);
+    const { savedPath, buffer, contentType, fileName } = await downloadAndSaveMedia(url, realFileName);
 
     const fileSize = data.content?.fileSize ?? data.content?.size ?? buffer.length;
 
@@ -195,7 +201,7 @@ export const fileMessageHandler: MessageHandler = {
       size: fileSize,
     };
 
-    const text = data.text ?? `[File: ${fileName}]`;
+    const text = data.text ?? `<media:file name="${fileName}">`;
     return {
       text,
       media: { items: [mediaItem], primary: mediaItem },

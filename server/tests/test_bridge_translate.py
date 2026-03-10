@@ -79,7 +79,7 @@ class TestTranslateBotEventMedia:
                 "text": "Here is the file",
                 "msgType": "image",
                 "media": {
-                    "mediaId": "media_abc123",
+                    "downloadUrl": "http://localhost:9000/astron-claw-media/sid/photo.png",
                     "fileName": "photo.png",
                     "mimeType": "image/png",
                     "fileSize": 1024,
@@ -90,8 +90,9 @@ class TestTranslateBotEventMedia:
         assert result["type"] == "message"
         assert result["msgType"] == "image"
         assert result["content"] == "Here is the file"
-        assert result["media"]["downloadUrl"] == "/api/media/download/media_abc123"
+        assert result["media"]["downloadUrl"] == "http://localhost:9000/astron-claw-media/sid/photo.png"
         assert result["media"]["fileName"] == "photo.png"
+        assert "mediaId" not in result["media"]
 
 
 class TestTranslateBotEventFallback:
