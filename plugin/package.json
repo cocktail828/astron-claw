@@ -1,6 +1,6 @@
 {
   "name": "astron-claw",
-  "version": "2.0.2",
+  "version": "1.0.0",
   "description": "AstronClaw channel plugin - connects chat clients via bridge server to OpenClaw.",
   "type": "module",
   "main": "index.ts",
