@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple/ uv
 
 # Sync production dependencies only (uses lockfile for reproducibility)
 COPY server/pyproject.toml server/uv.lock ./
-RUN uv sync -i https://pypi.tuna.tsinghua.edu.cn/simple/
+RUN uv sync --no-dev --frozen -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # ── Final image ───────────────────────────────────────────────────────────────
 FROM base
