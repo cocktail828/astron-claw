@@ -100,16 +100,34 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     }
 
     try {
-      const loaded = await loadWebMedia(downloadUrl);
-      const contentType = loaded.contentType ?? mediaInfo.mimeType ?? "application/octet-stream";
-      const fileName = loaded.fileName ?? mediaInfo.fileName ?? "file";
+      let buffer: Buffer;
+      let contentType: string;
+      let fileName: string;
+
+      try {
+        // Primary: use SDK loadWebMedia (with image optimization)
+        const loaded = await loadWebMedia(downloadUrl);
+        buffer = Buffer.from(loaded.buffer);
+        contentType = loaded.contentType ?? mediaInfo.mimeType ?? "application/octet-stream";
+        fileName = loaded.fileName ?? mediaInfo.fileName ?? "file";
+      } catch (sdkErr) {
+        // Fallback: native fetch (bypasses SDK SSRF for trusted bridge URLs)
+        logger.warn(`loadWebMedia blocked, falling back to native fetch: ${String(sdkErr)}`);
+        const resp = await fetch(downloadUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        buffer = Buffer.from(await resp.arrayBuffer());
+        contentType = resp.headers.get("content-type") ?? mediaInfo.mimeType ?? "application/octet-stream";
+        fileName = mediaInfo.fileName ?? "file";
+      }
 
       // Save buffer to SDK convention path: ~/.openclaw/media/inbound/{name}---{uuid}{ext}
-      const ext = extensionForMime(contentType) || ".bin";
+      // Prefer extension from URL path (ignoring query params) over mime-based detection
+      const urlExt = new URL(downloadUrl).pathname.match(/\.[a-zA-Z0-9]+$/)?.[0];
+      const ext = urlExt || extensionForMime(contentType) || ".bin";
       const uuid = randomUUID();
       const savedName = buildMediaFileName(fileName, uuid, ext);
       const savedPath = join(mediaDir, savedName);
-      await writeFile(savedPath, loaded.buffer);
+      await writeFile(savedPath, buffer);
 
       mediaPaths.push(savedPath);
       mediaTypes.push(contentType);
