@@ -1,4 +1,4 @@
-"""Async S3 client wrapper using aiobotocore."""
+"""S3/MinIO storage backend using aiobotocore."""
 
 import json
 from typing import TYPE_CHECKING, BinaryIO, Union
@@ -7,8 +7,9 @@ from urllib.parse import quote
 from aiobotocore.session import get_session, AioSession
 from botocore.exceptions import ClientError
 
-from infra.config import S3Config
+from infra.config import StorageConfig
 from infra.log import logger
+from infra.storage.base import ObjectStorage
 
 if TYPE_CHECKING:
     from types_aiobotocore_s3 import S3Client
@@ -23,23 +24,22 @@ _LIFECYCLE_RULE_7D = {
 }
 
 
-class S3Storage:
+class S3Storage(ObjectStorage):
     """Thin async wrapper around aiobotocore for S3/MinIO operations.
 
     Uses a persistent client connection (created in ``start()``, closed in
     ``close()``) to avoid per-request TCP handshake overhead.
     """
 
-    def __init__(self, config: S3Config):
+    def __init__(self, config: StorageConfig):
         self._config = config
         self._session: AioSession = get_session()
         self._client_ctx = None
         self._client: "S3Client | None" = None
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
+    # -- Lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
-        """Create the persistent S3 client (call once at startup)."""
         self._client_ctx = self._session.create_client(
             "s3",
             endpoint_url=self._config.endpoint,
@@ -50,7 +50,6 @@ class S3Storage:
         self._client = await self._client_ctx.__aenter__()
 
     async def close(self) -> None:
-        """Close the persistent S3 client (call once at shutdown)."""
         if self._client_ctx:
             await self._client_ctx.__aexit__(None, None, None)
             self._client_ctx = None
@@ -61,7 +60,7 @@ class S3Storage:
             raise RuntimeError("S3Storage not started — call start() first")
         return self._client
 
-    # ── Bucket setup ──────────────────────────────────────────────────────────
+    # -- Bucket setup ----------------------------------------------------------
 
     async def ensure_bucket(self) -> None:
         """Create bucket if not exists; only configure policy and lifecycle for newly created buckets."""
@@ -72,8 +71,8 @@ class S3Storage:
             logger.info("S3 bucket '{}' already exists, skipping policy/lifecycle setup", self._config.bucket)
             return
         except ClientError as e:
-            error_code = int(e.response.get("Error", {}).get("Code", 0))
-            if error_code == 404:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404":
                 await client.create_bucket(Bucket=self._config.bucket)
                 logger.info("S3 bucket '{}' created", self._config.bucket)
             else:
@@ -100,7 +99,7 @@ class S3Storage:
         )
         logger.info("S3 bucket '{}' configured (public-read + 7d lifecycle)", self._config.bucket)
 
-    # ── Object operations ─────────────────────────────────────────────────────
+    # -- Object operations -----------------------------------------------------
 
     async def put_object(
         self,
@@ -109,12 +108,6 @@ class S3Storage:
         content_type: str,
         content_length: int | None = None,
     ) -> str:
-        """Upload data to S3 and return the public download URL.
-
-        ``body`` can be raw bytes *or* a seekable file-like object (e.g.
-        ``SpooledTemporaryFile`` from FastAPI ``UploadFile``).  Passing a
-        file object avoids holding the entire payload in memory.
-        """
         client = self._get_client()
 
         # Ensure text types include charset so browsers decode CJK etc. correctly

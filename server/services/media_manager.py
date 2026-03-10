@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from infra.log import logger
-from infra.s3 import S3Storage
+from infra.storage import ObjectStorage
 
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 
@@ -19,10 +19,10 @@ ALLOWED_MIME_PREFIXES = (
 
 
 class MediaManager:
-    """Manages file upload to S3 object storage."""
+    """Manages file upload to object storage."""
 
-    def __init__(self, s3: S3Storage):
-        self._s3 = s3
+    def __init__(self, storage: ObjectStorage):
+        self._storage = storage
 
     async def store(
         self,
@@ -32,7 +32,7 @@ class MediaManager:
         mime_type: str,
         session_id: str | None = None,
     ) -> dict | None:
-        """Upload a file to S3.
+        """Upload a file to object storage.
 
         ``file_obj`` is a seekable file-like object (e.g. ``SpooledTemporaryFile``
         from FastAPI ``UploadFile.file``).  The caller is responsible for
@@ -59,11 +59,11 @@ class MediaManager:
         # when constructing the public download URL.
         key = f"{sid}/{safe_name}"
 
-        download_url = await self._s3.put_object(key, file_obj, mime_type, file_size)
+        download_url = await self._storage.put_object(key, file_obj, mime_type, file_size)
 
         logger.info(
-            "Stored media s3://{}/{} ({}, {} bytes)",
-            self._s3.bucket, key, mime_type, file_size,
+            "Stored media {}://{}/{} ({}, {} bytes)",
+            "oss", self._storage.bucket, key, mime_type, file_size,
         )
         return {
             "fileName": safe_name,

@@ -115,7 +115,6 @@ async def admin_cleanup(admin_session: str | None = Cookie(default=None)):
     if denied:
         return denied
     token_count = await state.token_manager.cleanup_expired()
-    media_count = await state.media_manager.cleanup_expired()
     session_count = await state.bridge.cleanup_old_sessions(max_age_days=30)
-    logger.info("Admin cleanup: removed {} tokens, {} media files, {} sessions", token_count, media_count, session_count)
-    return {"removed_tokens": token_count, "removed_media": media_count, "removed_sessions": session_count}
+    logger.info("Admin cleanup: removed {} tokens, {} sessions", token_count, session_count)
+    return {"removed_tokens": token_count, "removed_sessions": session_count}

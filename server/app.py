@@ -8,7 +8,7 @@ from infra.log import logger
 from infra.config import load_config
 from infra.database import init_db, get_session_factory, close_db
 from infra.cache import init_redis, close_redis
-from infra.s3 import S3Storage
+from infra.storage import create_storage
 
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
@@ -36,11 +36,11 @@ async def lifespan(app: FastAPI):
     state.token_manager = TokenManager(session_factory)
     state.admin_auth = AdminAuth(session_factory, redis)
 
-    # Initialize S3 storage
-    s3 = S3Storage(config.s3)
-    await s3.start()
-    await s3.ensure_bucket()
-    state.media_manager = MediaManager(s3)
+    # Initialize object storage
+    storage = create_storage(config.storage)
+    await storage.start()
+    await storage.ensure_bucket()
+    state.media_manager = MediaManager(storage)
 
     session_store = SessionStore(session_factory, redis)
     queue = create_queue(
@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown — close connections + stop pub/sub before closing infrastructure
     await state.bridge.shutdown()
-    await s3.close()
+    await storage.close()
     await close_redis()
     await close_db()
     logger.info("Astron Claw Bridge Server stopped")

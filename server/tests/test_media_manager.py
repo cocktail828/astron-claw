@@ -1,4 +1,4 @@
-"""Tests for services/media_manager.py — S3-based MediaManager."""
+"""Tests for services/media_manager.py — ObjectStorage-based MediaManager."""
 
 import io
 from unittest.mock import AsyncMock
@@ -9,12 +9,12 @@ from services.media_manager import MediaManager, MAX_FILE_SIZE
 
 
 @pytest.fixture()
-def mock_s3():
-    """Return a mock S3Storage."""
-    s3 = AsyncMock()
-    s3.put_object = AsyncMock(return_value="http://localhost:9000/astron-claw-media/sid/photo.png")
-    s3.bucket = "astron-claw-media"
-    return s3
+def mock_storage():
+    """Return a mock ObjectStorage."""
+    storage = AsyncMock()
+    storage.put_object = AsyncMock(return_value="http://localhost:9000/astron-claw-media/sid/photo.png")
+    storage.bucket = "astron-claw-media"
+    return storage
 
 
 class TestIsMimeAllowed:
@@ -23,68 +23,68 @@ class TestIsMimeAllowed:
         "video/mp4", "application/pdf", "text/plain", "text/csv",
         "application/zip", "application/octet-stream",
     ])
-    def test_is_mime_allowed_valid(self, mime, mock_s3):
-        mm = MediaManager(mock_s3)
+    def test_is_mime_allowed_valid(self, mime, mock_storage):
+        mm = MediaManager(mock_storage)
         assert mm._is_mime_allowed(mime) is True
 
     @pytest.mark.parametrize("mime", [
         "application/javascript", "font/woff2", "",
     ])
-    def test_is_mime_allowed_invalid(self, mime, mock_s3):
-        mm = MediaManager(mock_s3)
+    def test_is_mime_allowed_invalid(self, mime, mock_storage):
+        mm = MediaManager(mock_storage)
         assert mm._is_mime_allowed(mime) is False
 
 
 class TestStore:
-    async def test_store_too_large(self, mock_s3):
-        mm = MediaManager(mock_s3)
+    async def test_store_too_large(self, mock_storage):
+        mm = MediaManager(mock_storage)
         result = await mm.store(io.BytesIO(b"x"), "big.bin", MAX_FILE_SIZE + 1, "application/octet-stream")
         assert result is None
-        mock_s3.put_object.assert_not_called()
+        mock_storage.put_object.assert_not_called()
 
-    async def test_store_empty_file(self, mock_s3):
-        mm = MediaManager(mock_s3)
+    async def test_store_empty_file(self, mock_storage):
+        mm = MediaManager(mock_storage)
         result = await mm.store(io.BytesIO(b""), "empty.txt", 0, "text/plain")
         assert result is None
-        mock_s3.put_object.assert_not_called()
+        mock_storage.put_object.assert_not_called()
 
-    async def test_store_bad_mime(self, mock_s3):
-        mm = MediaManager(mock_s3)
+    async def test_store_bad_mime(self, mock_storage):
+        mm = MediaManager(mock_storage)
         result = await mm.store(io.BytesIO(b"data"), "script.js", 4, "application/javascript")
         assert result is None
-        mock_s3.put_object.assert_not_called()
+        mock_storage.put_object.assert_not_called()
 
-    async def test_store_path_traversal(self, mock_s3):
-        mm = MediaManager(mock_s3)
-        mock_s3.put_object.return_value = "http://localhost:9000/astron-claw-media/sid/passwd"
+    async def test_store_path_traversal(self, mock_storage):
+        mm = MediaManager(mock_storage)
+        mock_storage.put_object.return_value = "http://localhost:9000/astron-claw-media/sid/passwd"
         data = b"data"
         result = await mm.store(io.BytesIO(data), "../../etc/passwd", len(data), "text/plain")
         assert result is not None
         assert result["fileName"] == "passwd"
         # S3 key should use sanitized filename
-        key = mock_s3.put_object.call_args[0][0]
+        key = mock_storage.put_object.call_args[0][0]
         assert "/" in key
         assert ".." not in key
 
-    async def test_store_dot_segment_filename(self, mock_s3):
-        mm = MediaManager(mock_s3)
-        mock_s3.put_object.return_value = "http://localhost:9000/astron-claw-media/sid/unnamed"
+    async def test_store_dot_segment_filename(self, mock_storage):
+        mm = MediaManager(mock_storage)
+        mock_storage.put_object.return_value = "http://localhost:9000/astron-claw-media/sid/unnamed"
         data = b"data"
         result = await mm.store(io.BytesIO(data), "..", len(data), "text/plain")
         assert result is not None
         assert result["fileName"] == "unnamed"
 
-    async def test_store_dotfile_renamed(self, mock_s3):
-        mm = MediaManager(mock_s3)
-        mock_s3.put_object.return_value = "http://localhost:9000/astron-claw-media/sid/unnamed"
+    async def test_store_dotfile_renamed(self, mock_storage):
+        mm = MediaManager(mock_storage)
+        mock_storage.put_object.return_value = "http://localhost:9000/astron-claw-media/sid/unnamed"
         data = b"data"
         result = await mm.store(io.BytesIO(data), ".hidden", len(data), "text/plain")
         assert result is not None
         assert result["fileName"] == "unnamed"
 
-    async def test_store_success_with_session_id(self, mock_s3):
-        mm = MediaManager(mock_s3)
-        mock_s3.put_object.return_value = "http://localhost:9000/astron-claw-media/my-session/photo.png"
+    async def test_store_success_with_session_id(self, mock_storage):
+        mm = MediaManager(mock_storage)
+        mock_storage.put_object.return_value = "http://localhost:9000/astron-claw-media/my-session/photo.png"
         data = b"PNG file content"
         result = await mm.store(io.BytesIO(data), "photo.png", len(data), "image/png", "my-session")
 
@@ -96,15 +96,15 @@ class TestStore:
         assert result["downloadUrl"] == "http://localhost:9000/astron-claw-media/my-session/photo.png"
 
         # Verify S3 put_object was called with correct args
-        mock_s3.put_object.assert_called_once()
-        args = mock_s3.put_object.call_args[0]
+        mock_storage.put_object.assert_called_once()
+        args = mock_storage.put_object.call_args[0]
         assert args[0] == "my-session/photo.png"  # key
         assert args[2] == "image/png"              # content_type
         assert args[3] == len(data)                # content_length
 
-    async def test_store_success_without_session_id(self, mock_s3):
-        mm = MediaManager(mock_s3)
-        mock_s3.put_object.return_value = "http://localhost:9000/astron-claw-media/generated-uuid/photo.png"
+    async def test_store_success_without_session_id(self, mock_storage):
+        mm = MediaManager(mock_storage)
+        mock_storage.put_object.return_value = "http://localhost:9000/astron-claw-media/generated-uuid/photo.png"
         data = b"PNG file content"
         result = await mm.store(io.BytesIO(data), "photo.png", len(data), "image/png")
 

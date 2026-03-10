@@ -253,11 +253,25 @@ class ConnectionBridge:
         elif msg_type in ("image", "file", "audio", "video"):
             media_info = {}
             if media:
+                # Ensure download URL is properly percent-encoded for Claude API
+                download_url = media.get("downloadUrl", "")
+                if download_url:
+                    from urllib.parse import urlparse, unquote, quote, urlunparse
+                    parsed = urlparse(download_url)
+                    # Decode first to handle both encoded and unencoded URLs, then re-encode
+                    # to ensure Chinese/Unicode chars are properly percent-encoded
+                    decoded_path = unquote(parsed.path)
+                    encoded_path = quote(decoded_path, safe='/')
+                    download_url = urlunparse((
+                        parsed.scheme, parsed.netloc, encoded_path,
+                        parsed.params, parsed.query, parsed.fragment
+                    ))
+
                 media_info = {
                     "fileName": media.get("fileName", ""),
                     "mimeType": media.get("mimeType", ""),
                     "fileSize": media.get("fileSize", 0),
-                    "downloadUrl": media.get("downloadUrl", ""),
+                    "downloadUrl": download_url,
                 }
             description = user_message or f"[{msg_type}]"
             content_items.append({"type": "text", "text": description})

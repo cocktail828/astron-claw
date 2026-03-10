@@ -16,6 +16,7 @@ dependencies = [
     "uvloop",
     "httptools",
     "aiobotocore",
+    "aiohttp",
 ]
 
 [dependency-groups]

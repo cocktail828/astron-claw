@@ -216,6 +216,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiobotocore" },
+    { name = "aiohttp" },
     { name = "aiomysql" },
     { name = "alembic" },
     { name = "fastapi" },
@@ -239,6 +240,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiobotocore" },
+    { name = "aiohttp" },
     { name = "aiomysql" },
     { name = "alembic" },
     { name = "fastapi" },
