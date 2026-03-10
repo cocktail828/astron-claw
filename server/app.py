@@ -9,6 +9,7 @@ from infra.config import load_config
 from infra.database import init_db, get_session_factory, close_db
 from infra.cache import init_redis, close_redis
 from infra.storage import create_storage
+from infra.migration import run_migrations
 
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
@@ -31,6 +32,9 @@ async def lifespan(app: FastAPI):
 
     # Initialize Redis
     redis = await init_redis(config.redis)
+
+    # Auto-run pending database migrations (distributed-lock protected)
+    await run_migrations(redis, config.mysql.url)
 
     # Initialize managers and publish to shared state
     state.token_manager = TokenManager(session_factory)

@@ -38,5 +38,5 @@ EXPOSE 8765
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health')" || exit 1
 
-# Run database migrations then start the server
-CMD ["sh", "-c", "alembic upgrade head && python run.py"]
+# Start the server (migrations run automatically on startup)
+CMD ["python", "run.py"]
