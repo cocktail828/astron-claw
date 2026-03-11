@@ -363,6 +363,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         bridgeClient.send({
           jsonrpc: "2.0",
           id: requestId,
+          sessionId,
           result: { stopReason: "end_turn" },
         });
       } else {
@@ -370,6 +371,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         bridgeClient.send({
           jsonrpc: "2.0",
           id: requestId,
+          sessionId,
           result: { stopReason: "no_reply" },
         });
       }
@@ -378,6 +380,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       bridgeClient.send({
         jsonrpc: "2.0",
         id: requestId,
+        sessionId,
         error: { code: -32000, message: "Dispatch not available" },
       });
     }
@@ -386,6 +389,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     bridgeClient.send({
       jsonrpc: "2.0",
       id: requestId,
+      sessionId,
       error: { code: -32000, message: String(err) },
     });
   } finally {
