@@ -393,6 +393,20 @@ html, body {
 .hist-series-3 .hist-bar-fill { background: var(--chart-4); }
 .hist-series-4 .hist-bar-fill { background: var(--chart-5); }
 
+/* ===== Code badge ===== */
+.code-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.code-2xx { background: rgba(34,197,94,0.15); color: var(--success); }
+.code-4xx { background: rgba(245,158,11,0.15); color: var(--warning); }
+.code-5xx { background: rgba(239,68,68,0.15); color: var(--error); }
+
 /* ===== Empty / error states ===== */
 .empty-state {
   text-align: center;
@@ -604,13 +618,25 @@ function buildStats(metrics) {
   if (reqMetric) {
     let total = 0;
     let successCount = 0;
+    let errorCount = 0;
+    const errorByCode = {};
     for (const s of reqMetric.series) {
       if (!s.subType) {
         total += s.value;
-        if (s.labels.status === 'success') successCount += s.value;
+        const code = s.labels.code || '';
+        if (code === '200') {
+          successCount += s.value;
+        } else if (code) {
+          errorCount += s.value;
+          errorByCode[code] = (errorByCode[code] || 0) + s.value;
+        }
       }
     }
     cards.push({ label: 'Total Requests', value: formatNum(total), cls: 'accent', sub: `${formatNum(successCount)} success` });
+    if (errorCount > 0) {
+      const breakdown = Object.entries(errorByCode).sort((a,b) => b[1]-a[1]).map(([c,v]) => `${c}:${formatNum(v)}`).join(' ');
+      cards.push({ label: 'Error Requests', value: formatNum(errorCount), cls: 'error-color', sub: breakdown });
+    }
   }
 
   // Active streams
@@ -854,7 +880,19 @@ function withoutKeys(obj, keys) {
 function formatLabels(labels) {
   const entries = Object.entries(labels).filter(([k]) => k !== 'service');
   if (entries.length === 0) return '<span style="color:var(--text-muted)">-</span>';
-  return entries.map(([k, v]) => `<span>${esc(k)}="${esc(v)}"</span>`).join(' ');
+  return entries.map(([k, v]) => {
+    if (k === 'code') return formatCodeBadge(v);
+    return `<span>${esc(k)}="${esc(v)}"</span>`;
+  }).join(' ');
+}
+
+function formatCodeBadge(code) {
+  const c = parseInt(code, 10);
+  let cls = '';
+  if (c >= 200 && c < 300) cls = 'code-2xx';
+  else if (c >= 400 && c < 500) cls = 'code-4xx';
+  else if (c >= 500) cls = 'code-5xx';
+  return `<span class="code-badge ${cls}">${esc(code)}</span>`;
 }
 
 function formatNum(n) {
