@@ -147,6 +147,10 @@ class ConnectionBridge:
     async def unregister_bot(self, token: str) -> None:
         """Remove bot from local dict + clean up Redis and inboxes."""
         self._bots.pop(token, None)
+        # Purge pending requests belonging to this token to prevent memory leak
+        stale = [rid for rid, (t, _) in self._pending_requests.items() if t == token]
+        for rid in stale:
+            self._pending_requests.pop(rid, None)
         # Stop bot inbox consuming
         task_key = f"bot:{token}"
         task = self._poll_tasks.pop(task_key, None)
@@ -370,9 +374,10 @@ class ConnectionBridge:
                     block_ms=_CONSUME_BLOCK_MS,
                 )
                 if result is None:
-                    # In production XREADGROUP BLOCK waits at Redis level;
-                    # yield to event loop as a safety net for mocked/non-blocking paths.
-                    await asyncio.sleep(0)
+                    # XREADGROUP BLOCK normally waits at Redis level, but if the
+                    # call returns instantly (e.g. repeated NOGROUP recovery),
+                    # sleep 1s to prevent a tight CPU-burning loop.
+                    await asyncio.sleep(1)
                     continue
                 msg_id, raw = result
                 data = json.loads(raw)
