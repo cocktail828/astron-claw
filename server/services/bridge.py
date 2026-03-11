@@ -9,6 +9,7 @@ from urllib.parse import urlparse, unquote, quote, urlunparse
 
 from redis.asyncio import Redis
 
+from infra.errors import Err
 from infra.log import logger
 
 if TYPE_CHECKING:
@@ -326,7 +327,7 @@ class ConnectionBridge:
 
         if "id" in msg and "error" in msg:
             session_id = msg.get("sessionId")
-            error_msg = msg["error"].get("message", "Unknown error from bot")
+            error_msg = msg["error"].get("message", Err.BOT_UNKNOWN_ERROR.message)
             logger.error("Bot JSON-RPC error: {} (token={}...)", error_msg, token[:10])
             error_event = {"type": "error", "content": error_msg}
             if session_id:

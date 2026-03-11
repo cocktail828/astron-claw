@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Form, Header, UploadFile, File
-from fastapi.responses import JSONResponse
 
+from infra.errors import Err, error_response
 from infra.log import logger
 from services.media_manager import MAX_FILE_SIZE
 import services.state as state
@@ -30,7 +30,7 @@ async def upload_media(
 ):
     token = await _validate_token_header(authorization)
     if not token:
-        return JSONResponse({"error": "Invalid or missing token"}, status_code=401)
+        return error_response(Err.AUTH_INVALID_TOKEN)
 
     # Determine file size via seek — avoids reading entire file into memory.
     # FastAPI's UploadFile wraps a SpooledTemporaryFile that spills to disk
@@ -42,10 +42,7 @@ async def upload_media(
 
     if file_size > MAX_FILE_SIZE:
         logger.warning("Media upload rejected: file too large ({} bytes)", file_size)
-        return JSONResponse(
-            {"error": f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB"},
-            status_code=413,
-        )
+        return error_response(Err.MEDIA_FILE_TOO_LARGE)
 
     mime_type = file.content_type or "application/octet-stream"
     file_name = file.filename or "unnamed"
@@ -53,7 +50,7 @@ async def upload_media(
     result = await state.media_manager.store(file_obj, file_name, file_size, mime_type, sessionId)
     if not result:
         logger.warning("Media upload rejected: invalid file (name={}, mime={})", file_name, mime_type)
-        return JSONResponse({"error": "Invalid file or unsupported type"}, status_code=400)
+        return error_response(Err.MEDIA_INVALID_FILE)
 
     logger.info("Media uploaded: {} ({} bytes) token={}...", file_name, file_size, token[:10])
     return result

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Cookie
 from fastapi.responses import JSONResponse
 
+from infra.errors import Err, error_response
 from infra.log import logger
 import services.state as state
 
@@ -18,10 +19,10 @@ async def admin_auth_status(admin_session: str | None = Cookie(default=None)):
 @router.post("/api/admin/auth/setup")
 async def admin_auth_setup(body: dict):
     if await state.admin_auth.is_password_set():
-        return JSONResponse({"error": "Password already set"}, status_code=400)
+        return error_response(Err.ADMIN_PASSWORD_EXISTS)
     password = body.get("password", "")
     if len(password) < 4:
-        return JSONResponse({"error": "Password too short"}, status_code=400)
+        return error_response(Err.ADMIN_PASSWORD_SHORT)
     await state.admin_auth.set_password(password)
     session = await state.admin_auth.create_session()
     logger.info("Admin password set up for the first time")
@@ -38,7 +39,7 @@ async def admin_auth_login(body: dict):
     password = body.get("password", "")
     if not await state.admin_auth.verify_password(password):
         logger.warning("Admin login failed — wrong password")
-        return JSONResponse({"error": "Wrong password"}, status_code=401)
+        return error_response(Err.AUTH_WRONG_PASSWORD)
     session = await state.admin_auth.create_session()
     logger.info("Admin logged in successfully")
     resp = JSONResponse({"ok": True})

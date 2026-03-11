@@ -4,9 +4,10 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Header
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from infra.errors import Err, error_response
 from infra.log import logger
 from infra.telemetry.metrics import (
     chat_request_total,
@@ -190,13 +191,13 @@ async def _stream_response(
                 return
 
         # Timeout reached
-        yield _sse_event("error", {"content": "Stream timeout"})
+        yield _sse_event("error", {"content": Err.CHAT_STREAM_TIMEOUT.message})
     except asyncio.CancelledError:
         # Client disconnected
         logger.info("SSE: client disconnected (token={}...)", token[:10])
     except Exception:
         logger.exception("SSE: stream error (token={}...)", token[:10])
-        yield _sse_event("error", {"content": "Internal server error"})
+        yield _sse_event("error", {"content": Err.CHAT_INTERNAL_ERROR.message})
 
 
 async def _stream_with_cleanup(
@@ -219,7 +220,7 @@ async def _stream_with_cleanup(
             yield event
             # Detect close reason from terminal events
             if event.startswith("event: error"):
-                if "Stream timeout" in event:
+                if Err.CHAT_STREAM_TIMEOUT.message in event:
                     close_reason = "timeout"
                 else:
                     close_reason = "error"
@@ -261,10 +262,7 @@ async def chat_sse(
     if not token:
         logger.warning("SSE: auth failed (token missing or invalid)")
         _record_request("auth_fail", 401, "", t0)
-        return JSONResponse(
-            status_code=401,
-            content={"ok": False, "error": "Invalid or missing token"},
-        )
+        return error_response(Err.AUTH_INVALID_TOKEN)
 
     tp = _token_prefix(token)
 
@@ -278,35 +276,23 @@ async def chat_sse(
                 if not item.content.startswith(("http://", "https://")):
                     logger.warning("SSE: bad request — invalid media URL scheme: {} (token={}...)", item.content, token[:10])
                     _record_request("bad_request", 400, tp, t0)
-                    return JSONResponse(
-                        status_code=400,
-                        content={"ok": False, "error": f"Invalid media URL scheme: {item.content}"},
-                    )
+                    return error_response(Err.MEDIA_BAD_URL_SCHEME, detail=item.content)
                 media_urls.append(item.content)
             else:
                 logger.warning("SSE: bad request — unsupported media type: {} (token={}...)", item.type, token[:10])
                 _record_request("bad_request", 400, tp, t0)
-                return JSONResponse(
-                    status_code=400,
-                    content={"ok": False, "error": f"Unsupported media type: {item.type}"},
-                )
+                return error_response(Err.MEDIA_UNSUPPORTED_TYPE, detail=item.type)
 
     if not content and not media_urls:
         logger.warning("SSE: bad request — empty message (token={}...)", token[:10])
         _record_request("bad_request", 400, tp, t0)
-        return JSONResponse(
-            status_code=400,
-            content={"ok": False, "error": "Empty message"},
-        )
+        return error_response(Err.CHAT_EMPTY_MESSAGE)
 
     # Check bot connected
     if not await state.bridge.is_bot_connected(token):
         logger.warning("SSE: no bot connected (token={}...)", token[:10])
         _record_request("no_bot", 400, tp, t0)
-        return JSONResponse(
-            status_code=400,
-            content={"ok": False, "error": "No bot connected"},
-        )
+        return error_response(Err.CHAT_NO_BOT)
 
     # Resolve session
     try:
@@ -314,10 +300,7 @@ async def chat_sse(
     except ValueError as e:
         logger.warning("SSE: session not found {} (token={}...)", body.sessionId, token[:10])
         _record_request("session_not_found", 404, tp, t0)
-        return JSONResponse(
-            status_code=404,
-            content={"ok": False, "error": str(e)},
-        )
+        return error_response(Err.SESSION_NOT_FOUND, detail=body.sessionId)
 
     # Clear stale events and reset consumer group for this SSE request
     queue = state.queue
@@ -334,10 +317,7 @@ async def chat_sse(
     if not req_id:
         logger.error("SSE: send_to_bot failed (token={}...)", token[:10])
         _record_request("send_fail", 500, tp, t0)
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "error": "Failed to send message to bot"},
-        )
+        return error_response(Err.CHAT_SEND_FAILED)
 
     # Success — entering SSE stream
     _record_request("success", 200, tp, t0)
@@ -369,10 +349,7 @@ async def list_sessions(
     validated = await _authenticate(authorization)
     if not validated:
         logger.warning("SSE: sessions auth failed (list)")
-        return JSONResponse(
-            status_code=401,
-            content={"ok": False, "error": "Invalid or missing token"},
-        )
+        return error_response(Err.AUTH_INVALID_TOKEN)
 
     sessions = await state.bridge.get_sessions(validated)
 
@@ -393,10 +370,7 @@ async def create_session(
     validated = await _authenticate(authorization)
     if not validated:
         logger.warning("SSE: sessions auth failed (create)")
-        return JSONResponse(
-            status_code=401,
-            content={"ok": False, "error": "Invalid or missing token"},
-        )
+        return error_response(Err.AUTH_INVALID_TOKEN)
 
     session_id, session_number = await state.bridge.create_session(validated)
     sessions = await state.bridge.get_sessions(validated)
