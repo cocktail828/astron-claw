@@ -115,11 +115,8 @@ class ConnectionBridge:
     async def _cleanup_chat_inboxes(self, token: str) -> None:
         """Delete all chat inbox streams for the given token."""
         pattern = f"{CHAT_INBOX_PREFIX}{token}:*"
-        batch: list[str] = []
         async for key in self._redis.scan_iter(match=pattern, count=100):
-            batch.append(key)
-        if batch:
-            await self._redis.delete(*batch)
+            await self._redis.delete(key)
 
     # ── Bot registration (multi-worker safe) ─────────────────────────────────
 
