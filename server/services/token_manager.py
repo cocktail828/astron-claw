@@ -24,7 +24,7 @@ class TokenManager:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session = session_factory
 
-    async def generate(self, name: str = "", expires_in: int = 86400) -> str:
+    async def generate(self, name: str = "", expires_in: int = 0) -> str:
         token_value = "sk-" + secrets.token_hex(24)
         now = datetime.now(timezone.utc)
         expires_at = _NEVER_EXPIRES if expires_in == 0 else now + timedelta(seconds=expires_in)
