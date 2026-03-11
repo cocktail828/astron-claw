@@ -146,6 +146,8 @@ async def _stream_response(
         "sessionNumber": session_number,
     })
 
+    has_chunks = False  # Track whether any chunk events have been sent
+
     try:
         while time.time() < deadline:
             result = await queue.consume(
@@ -184,6 +186,14 @@ async def _stream_response(
                     continue
             else:
                 event_data = event
+            if event_type == "chunk":
+                has_chunks = True
+
+            # Auto-inject a chunk before done when no preceding chunks exist
+            # Only inject content — chunk events carry text content only
+            if event_type == "done" and not has_chunks and event_data.get("content"):
+                yield _sse_event("chunk", {"content": event_data["content"]})
+
             yield _sse_event(event_type, event_data)
 
             # Terminal events — close the stream

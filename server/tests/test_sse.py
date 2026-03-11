@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from routers.sse import _authenticate, _resolve_session, _sse_event, _sse_comment, MediaItem
+from routers.sse import _authenticate, _resolve_session, _sse_event, _sse_comment, _stream_response, MediaItem
 
 
 # ── MediaItem validation ───────────────────────────────────────────────────
@@ -271,6 +271,89 @@ class TestListSessionsEndpoint:
             assert resp["code"] == 0
             assert len(resp["sessions"]) == 2
             assert "activeSessionId" not in resp
+
+
+# ── _stream_response chunk auto-injection ────────────────────────────────
+
+
+class TestStreamResponseChunkInjection:
+    """Verify that done events with content auto-inject a preceding chunk."""
+
+    async def _collect_events(self, messages, max_consume_calls=50):
+        """Helper: mock queue to return given messages then None, collect SSE events."""
+        call_count = 0
+
+        async def fake_consume(inbox, group, consumer, block_ms):
+            nonlocal call_count
+            if call_count < len(messages):
+                msg = messages[call_count]
+                call_count += 1
+                return (f"id-{call_count}", json.dumps(msg))
+            call_count += 1
+            if call_count > max_consume_calls:
+                raise TimeoutError("fake_consume safety limit reached")
+            return None
+
+        with patch("routers.sse.state") as mock_state:
+            mock_queue = AsyncMock()
+            mock_queue.consume = AsyncMock(side_effect=fake_consume)
+            mock_state.queue = mock_queue
+
+            events = []
+            async for ev in _stream_response("tok", "sid", 1, "req"):
+                events.append(ev)
+                # Stop after terminal event
+                if "event: done" in ev or "event: error" in ev:
+                    break
+            return events
+
+    async def test_done_with_content_no_preceding_chunks_injects_chunk(self):
+        """When done carries content and no chunk was sent, a chunk is auto-injected."""
+        events = await self._collect_events([
+            {"type": "done", "content": "Model list: gpt-4"},
+        ])
+        # events[0] = session, events[1] = injected chunk, events[2] = done
+        event_types = [e.split("\n")[0] for e in events]
+        assert event_types[1] == "event: chunk"
+        assert '"Model list: gpt-4"' in events[1]
+        assert event_types[2] == "event: done"
+        assert '"Model list: gpt-4"' in events[2]
+
+    async def test_done_with_content_after_chunks_no_extra_injection(self):
+        """When chunks already preceded done, no extra chunk is injected."""
+        events = await self._collect_events([
+            {"type": "chunk", "content": "partial"},
+            {"type": "done", "content": "full answer"},
+        ])
+        # events[0] = session, events[1] = chunk, events[2] = done (no extra chunk)
+        event_types = [e.split("\n")[0] for e in events]
+        assert event_types == [
+            "event: session",
+            "event: chunk",
+            "event: done",
+        ]
+
+    async def test_done_with_empty_string_content_no_injection(self):
+        """When done has empty string content, no chunk is injected."""
+        events = await self._collect_events([
+            {"type": "done", "content": ""},
+        ])
+        event_types = [e.split("\n")[0] for e in events]
+        assert event_types == [
+            "event: session",
+            "event: done",
+        ]
+
+    async def test_done_without_content_no_injection(self):
+        """When done has no content, no chunk is injected even without prior chunks."""
+        events = await self._collect_events([
+            {"type": "done"},
+        ])
+        event_types = [e.split("\n")[0] for e in events]
+        assert event_types == [
+            "event: session",
+            "event: done",
+        ]
 
 
 class TestCreateSessionEndpoint:
