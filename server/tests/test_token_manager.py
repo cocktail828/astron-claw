@@ -1,6 +1,6 @@
 """Tests for services/token_manager.py — TokenManager."""
 
-import time
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,7 +24,7 @@ class TestGenerate:
         # Check the Token object passed to session.add
         add_call = session.add.call_args
         token_obj = add_call[0][0]
-        assert token_obj.expires_at == 9999999999.0
+        assert token_obj.expires_at == datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
 
 class TestValidate:
@@ -72,7 +72,7 @@ class TestUpdate:
 
         token_obj = MagicMock()
         token_obj.name = "old_name"
-        token_obj.expires_at = 9999999999.0
+        token_obj.expires_at = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = token_obj
         session.execute.return_value = mock_result
@@ -81,7 +81,7 @@ class TestUpdate:
         assert result is True
         assert token_obj.name == "new_name"
         # expires_at should be unchanged since expires_in was not passed
-        assert token_obj.expires_at == 9999999999.0
+        assert token_obj.expires_at == datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
 
 
 class TestCleanupExpired:

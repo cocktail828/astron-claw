@@ -4,7 +4,7 @@ Write path: MySQL first (must succeed) → Redis cache (failure only warns).
 Read path: Redis first → miss → MySQL query + cache repopulate.
 """
 
-import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from redis.asyncio import Redis
@@ -32,7 +32,7 @@ class SessionStore:
 
         Returns the session_number (1-based ordinal within the token).
         """
-        now = time.time()
+        now = datetime.now(timezone.utc)
 
         # MySQL — must succeed
         async with self._sf() as db:
@@ -122,7 +122,7 @@ class SessionStore:
 
     async def cleanup_old_sessions(self, max_age_seconds: float) -> int:
         """Delete sessions older than max_age_seconds. Returns count removed."""
-        cutoff = time.time() - max_age_seconds
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
         async with self._sf() as db:
             result = await db.execute(
                 select(ChatSession.token, ChatSession.session_id)

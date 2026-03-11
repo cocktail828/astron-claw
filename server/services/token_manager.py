@@ -1,5 +1,5 @@
 import secrets
-import time
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, delete, update, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -7,8 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from infra.models import Token
 from infra.log import logger
 
-# A far-future timestamp (~year 2200) used for "never expires" tokens.
-_NEVER_EXPIRES = 9999999999.0
+# MySQL DATETIME maximum — used for "never expires" tokens.
+_NEVER_EXPIRES = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def _to_timestamp(dt: datetime) -> float:
+    """Convert a (possibly naive) datetime to UTC Unix timestamp."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 class TokenManager:
@@ -17,10 +24,10 @@ class TokenManager:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session = session_factory
 
-    async def generate(self, name: str = "", expires_in: int = 86400) -> str:
+    async def generate(self, name: str = "", expires_in: int = 0) -> str:
         token_value = "sk-" + secrets.token_hex(24)
-        now = time.time()
-        expires_at = _NEVER_EXPIRES if expires_in == 0 else now + expires_in
+        now = datetime.now(timezone.utc)
+        expires_at = _NEVER_EXPIRES if expires_in == 0 else now + timedelta(seconds=expires_in)
 
         async with self._session() as session:
             session.add(Token(
@@ -41,7 +48,7 @@ class TokenManager:
             row = await session.execute(
                 select(Token.token).where(
                     Token.token == token,
-                    Token.expires_at >= time.time(),
+                    Token.expires_at >= datetime.now(timezone.utc),
                 )
             )
             valid = row.scalar_one_or_none() is not None
@@ -66,7 +73,7 @@ class TokenManager:
                 obj.name = name
             if expires_in is not None:
                 obj.expires_at = (
-                    _NEVER_EXPIRES if expires_in == 0 else time.time() + expires_in
+                    _NEVER_EXPIRES if expires_in == 0 else datetime.now(timezone.utc) + timedelta(seconds=expires_in)
                 )
             await session.commit()
         return True
@@ -85,7 +92,7 @@ class TokenManager:
         page_size: int = 20,
         search: str = "",
     ) -> dict:
-        now = time.time()
+        now = datetime.now(timezone.utc)
         async with self._session() as session:
             base = select(Token).where(Token.expires_at >= now)
             if search:
@@ -108,9 +115,9 @@ class TokenManager:
             "items": [
                 {
                     "token": row.token,
-                    "created_at": row.created_at,
+                    "created_at": _to_timestamp(row.created_at),
                     "name": row.name or "",
-                    "expires_at": row.expires_at,
+                    "expires_at": _to_timestamp(row.expires_at),
                 }
                 for row in rows
             ],
@@ -122,7 +129,7 @@ class TokenManager:
     async def cleanup_expired(self) -> int:
         async with self._session() as session:
             result = await session.execute(
-                delete(Token).where(Token.expires_at < time.time())
+                delete(Token).where(Token.expires_at < datetime.now(timezone.utc))
             )
             await session.commit()
             count = result.rowcount

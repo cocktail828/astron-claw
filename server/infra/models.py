@@ -1,4 +1,6 @@
-from sqlalchemy import String, Text, Double, Integer, Index
+from datetime import datetime
+
+from sqlalchemy import String, Text, Integer, DateTime, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -24,17 +26,17 @@ class Token(Base):
         String(64), nullable=False,
         comment="令牌值，sk- 前缀 + 24字节hex，全局唯一标识",
     )
-    created_at: Mapped[float] = mapped_column(
-        Double, nullable=False,
-        comment="创建时间，Unix 时间戳（秒）",
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False,
+        comment="创建时间（UTC）",
     )
     name: Mapped[str] = mapped_column(
         String(255), nullable=False, default="",
         comment="令牌名称，便于管理员识别用途",
     )
-    expires_at: Mapped[float] = mapped_column(
-        Double, nullable=False,
-        comment="过期时间，Unix 时间戳（秒），9999999999.0 表示永不过期",
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False,
+        comment="过期时间（UTC），9999-12-31 23:59:59 表示永不过期",
     )
 
 
@@ -88,7 +90,7 @@ class ChatSession(Base):
         Integer, nullable=False,
         comment="该 token 下的序号（从 1 开始）",
     )
-    created_at: Mapped[float] = mapped_column(
-        Double, nullable=False,
-        comment="创建时间，Unix 时间戳（秒）",
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False,
+        comment="创建时间（UTC）",
     )
