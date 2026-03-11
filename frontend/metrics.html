@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Astron Claw - Metrics</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0a0e27;
+  --bg-secondary: #111638;
+  --bg-tertiary: #1a2040;
+  --bg-input: #151a3a;
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa0b8;
+  --text-muted: #6b7194;
+  --accent: #4f8ff7;
+  --accent-hover: #6ba1ff;
+  --accent-dim: rgba(79, 143, 247, 0.15);
+  --border: #252b52;
+  --error: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --transition: 0.2s ease;
+  /* Chart palette */
+  --chart-1: #4f8ff7;
+  --chart-2: #22c55e;
+  --chart-3: #f59e0b;
+  --chart-4: #ef4444;
+  --chart-5: #a855f7;
+  --chart-6: #06b6d4;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f7f8fc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f2f8;
+  --bg-input: #ffffff;
+  --text-primary: #1a1a2e;
+  --text-secondary: #555770;
+  --text-muted: #8e90a6;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-dim: rgba(37, 99, 235, 0.1);
+  --border: #e2e4ee;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background var(--transition), color var(--transition);
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ===== Layout ===== */
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.header h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  flex: 1;
+}
+
+.header h1 small {
+  font-weight: 400;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.logo-sm { width: 36px; height: 36px; border-radius: 8px; }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.1rem;
+  transition: all var(--transition);
+  text-decoration: none;
+}
+
+.icon-btn:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ===== Status bar ===== */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  display: inline-block;
+  animation: pulse 2s infinite;
+}
+
+.status-dot.error { background: var(--error); animation: none; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all var(--transition);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+
+.btn-secondary:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+
+/* ===== Stat Cards ===== */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  animation: fadeUp 0.3s ease;
+}
+
+.stat-card .label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-card .value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.stat-card .sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.accent { color: var(--accent); }
+.success { color: var(--success); }
+.warning { color: var(--warning); }
+.error-color { color: var(--error); }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ===== Metric cards ===== */
+.section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 28px 0 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-title .badge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.metric-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 14px;
+  animation: fadeUp 0.3s ease;
+}
+
+.metric-card .metric-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.metric-card .metric-name {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.metric-card .metric-type {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.type-counter { background: rgba(79,143,247,0.15); color: var(--chart-1); }
+.type-gauge { background: rgba(34,197,94,0.15); color: var(--chart-2); }
+.type-histogram { background: rgba(245,158,11,0.15); color: var(--chart-3); }
+
+.metric-card .metric-help {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+/* ===== Data table inside metric card ===== */
+.metric-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.metric-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.metric-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.metric-table tr:last-child td { border-bottom: none; }
+
+.metric-table .val {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.metric-table .labels {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.metric-table .labels span {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  margin: 1px 2px;
+}
+
+/* ===== Histogram bar chart ===== */
+.hist-chart {
+  margin-top: 10px;
+}
+
+.hist-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 0.76rem;
+}
+
+.hist-bar-label {
+  width: 80px;
+  text-align: right;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.hist-bar-track {
+  flex: 1;
+  height: 20px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.hist-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--chart-1);
+  transition: width 0.5s ease;
+  min-width: 0;
+}
+
+.hist-bar-count {
+  width: 60px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  flex-shrink: 0;
+}
+
+/* series colors */
+.hist-series-0 .hist-bar-fill { background: var(--chart-1); }
+.hist-series-1 .hist-bar-fill { background: var(--chart-2); }
+.hist-series-2 .hist-bar-fill { background: var(--chart-3); }
+.hist-series-3 .hist-bar-fill { background: var(--chart-4); }
+.hist-series-4 .hist-bar-fill { background: var(--chart-5); }
+
+/* ===== Code badge ===== */
+.code-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.code-2xx { background: rgba(34,197,94,0.15); color: var(--success); }
+.code-4xx { background: rgba(245,158,11,0.15); color: var(--warning); }
+.code-5xx { background: rgba(239,68,68,0.15); color: var(--error); }
+
+/* ===== Empty / error states ===== */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+
+.empty-state .icon { font-size: 3rem; margin-bottom: 12px; opacity: 0.4; }
+.empty-state .title { font-size: 1.1rem; margin-bottom: 6px; color: var(--text-secondary); }
+.empty-state .desc { font-size: 0.85rem; }
+
+/* ===== Raw toggle ===== */
+.raw-block {
+  display: none;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  margin-top: 16px;
+  overflow-x: auto;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.raw-block.active { display: block; }
+
+.raw-block pre {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  white-space: pre;
+  line-height: 1.5;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 600px) {
+  .stats { grid-template-columns: 1fr 1fr; }
+  .header h1 { font-size: 1.1rem; }
+  .hist-bar-label { width: 60px; font-size: 0.7rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <!-- Header -->
+  <div class="header">
+    <img src="/static/astron_logo.png" class="logo-sm" alt="Logo">
+    <h1>Astron Claw <small>Metrics</small></h1>
+    <div class="header-actions">
+      <a class="icon-btn" href="/" title="Chat">&#8962;</a>
+      <a class="icon-btn" href="/admin" title="Admin">&#9881;</a>
+      <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme">
+        <span id="theme-icon">&#9790;</span>
+      </button>
+      <button class="btn btn-sm btn-secondary" id="btn-raw" onclick="toggleRaw()">Raw</button>
+      <button class="btn btn-sm btn-primary" onclick="fetchMetrics()">Refresh</button>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <span class="status-dot" id="status-dot"></span>
+    <span id="status-text">Loading...</span>
+    <span style="margin-left:auto" id="last-updated"></span>
+  </div>
+
+  <!-- Summary stat cards -->
+  <div class="stats" id="stats-row"></div>
+
+  <!-- Metric sections -->
+  <div id="metrics-container"></div>
+
+  <!-- Raw Prometheus text -->
+  <div class="raw-block" id="raw-block">
+    <pre id="raw-text"></pre>
+  </div>
+
+  <!-- Empty state -->
+  <div class="empty-state" id="empty-state" style="display:none">
+    <div class="icon">&#128202;</div>
+    <div class="title">No metrics data</div>
+    <div class="desc">Metrics will appear once OTLP telemetry is enabled and traffic is flowing.</div>
+  </div>
+</div>
+
+<script>
+/* ===== Theme ===== */
+(function() {
+  const saved = localStorage.getItem('astron-theme');
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+  updateThemeIcon();
+})();
+
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('astron-theme', next);
+  updateThemeIcon();
+}
+
+function updateThemeIcon() {
+  const icon = document.getElementById('theme-icon');
+  if (icon) icon.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '\u263E' : '\u2600';
+}
+
+/* ===== State ===== */
+let rawVisible = false;
+let refreshTimer = null;
+const REFRESH_INTERVAL = 10000;
+
+/* ===== Toggle raw view ===== */
+function toggleRaw() {
+  rawVisible = !rawVisible;
+  document.getElementById('raw-block').classList.toggle('active', rawVisible);
+  document.getElementById('btn-raw').classList.toggle('btn-primary', rawVisible);
+  document.getElementById('btn-raw').classList.toggle('btn-secondary', !rawVisible);
+}
+
+/* ===== Parse Prometheus exposition text ===== */
+function parsePrometheus(text) {
+  const metrics = {};
+  const lines = text.split('\n');
+  let currentName = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      if (trimmed.startsWith('# HELP ')) {
+        const rest = trimmed.substring(7);
+        const spaceIdx = rest.indexOf(' ');
+        const name = spaceIdx > 0 ? rest.substring(0, spaceIdx) : rest;
+        const help = spaceIdx > 0 ? rest.substring(spaceIdx + 1) : '';
+        // Strip suffixes to get base name
+        const baseName = name.replace(/_total$/, '').replace(/_seconds$/, '');
+        if (!metrics[baseName]) metrics[baseName] = { name: baseName, promName: name, help: '', type: '', series: [] };
+        metrics[baseName].help = help;
+        metrics[baseName].promName = name;
+        currentName = baseName;
+      } else if (trimmed.startsWith('# TYPE ')) {
+        const rest = trimmed.substring(7);
+        const spaceIdx = rest.indexOf(' ');
+        const name = spaceIdx > 0 ? rest.substring(0, spaceIdx) : rest;
+        const type = spaceIdx > 0 ? rest.substring(spaceIdx + 1) : '';
+        const baseName = name.replace(/_total$/, '').replace(/_seconds$/, '');
+        if (!metrics[baseName]) metrics[baseName] = { name: baseName, promName: name, help: '', type: '', series: [] };
+        metrics[baseName].type = type;
+        currentName = baseName;
+      }
+      continue;
+    }
+
+    // Data line: metric_name{labels} value
+    const match = trimmed.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\{?(.*?)\}?\s+(.+)$/);
+    if (!match) continue;
+
+    const rawName = match[1];
+    const labelsStr = match[2];
+    const value = parseFloat(match[3]);
+
+    // Parse labels
+    const labels = {};
+    if (labelsStr) {
+      const labelRegex = /([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"/g;
+      let m;
+      while ((m = labelRegex.exec(labelsStr)) !== null) {
+        labels[m[1]] = m[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      }
+    }
+
+    // Determine which metric this belongs to
+    let baseName = rawName.replace(/_total$/, '').replace(/_seconds$/, '');
+    // Handle histogram sub-metrics
+    let subType = null;
+    if (baseName.endsWith('_bucket')) {
+      baseName = baseName.replace(/_bucket$/, '');
+      subType = 'bucket';
+    } else if (baseName.endsWith('_sum')) {
+      baseName = baseName.replace(/_sum$/, '');
+      subType = 'sum';
+    } else if (baseName.endsWith('_count')) {
+      baseName = baseName.replace(/_count$/, '');
+      subType = 'count';
+    }
+    // Also check with _seconds suffix stripped
+    if (!metrics[baseName]) {
+      const altName = rawName.replace(/_seconds_(bucket|sum|count)$/, '').replace(/_seconds_total$/, '').replace(/_seconds$/, '').replace(/_total$/, '');
+      if (metrics[altName]) baseName = altName;
+    }
+
+    if (!metrics[baseName]) {
+      metrics[baseName] = { name: baseName, promName: rawName, help: '', type: '', series: [] };
+    }
+
+    metrics[baseName].series.push({ rawName, labels, value, subType });
+  }
+
+  return metrics;
+}
+
+/* ===== Build stat cards ===== */
+function buildStats(metrics) {
+  const statsRow = document.getElementById('stats-row');
+  const cards = [];
+
+  // Total requests
+  const reqMetric = findMetric(metrics, 'requests');
+  if (reqMetric) {
+    let total = 0;
+    let successCount = 0;
+    let errorCount = 0;
+    const errorByCode = {};
+    for (const s of reqMetric.series) {
+      if (!s.subType) {
+        total += s.value;
+        const code = s.labels.code || '';
+        if (code === '200') {
+          successCount += s.value;
+        } else if (code) {
+          errorCount += s.value;
+          errorByCode[code] = (errorByCode[code] || 0) + s.value;
+        }
+      }
+    }
+    cards.push({ label: 'Total Requests', value: formatNum(total), cls: 'accent', sub: `${formatNum(successCount)} success` });
+    if (errorCount > 0) {
+      const breakdown = Object.entries(errorByCode).sort((a,b) => b[1]-a[1]).map(([c,v]) => `${c}:${formatNum(v)}`).join(' ');
+      cards.push({ label: 'Error Requests', value: formatNum(errorCount), cls: 'error-color', sub: breakdown });
+    }
+  }
+
+  // Active streams
+  const streamMetric = findMetric(metrics, 'active_streams');
+  if (streamMetric) {
+    let total = 0;
+    for (const s of streamMetric.series) {
+      if (!s.subType) total += s.value;
+    }
+    cards.push({ label: 'Active Streams', value: formatNum(total), cls: 'success' });
+  }
+
+  // Avg request duration
+  const durMetric = findMetric(metrics, 'request_duration') || findMetric(metrics, 'request.duration');
+  if (durMetric) {
+    let totalSum = 0, totalCount = 0;
+    for (const s of durMetric.series) {
+      if (s.subType === 'sum') totalSum += s.value;
+      if (s.subType === 'count') totalCount += s.value;
+    }
+    const avg = totalCount > 0 ? (totalSum / totalCount) : 0;
+    cards.push({ label: 'Avg Request Duration', value: formatDuration(avg), cls: 'warning', sub: `${formatNum(totalCount)} samples` });
+  }
+
+  // Avg stream duration
+  const sdurMetric = findMetric(metrics, 'stream_duration') || findMetric(metrics, 'stream.duration');
+  if (sdurMetric) {
+    let totalSum = 0, totalCount = 0;
+    for (const s of sdurMetric.series) {
+      if (s.subType === 'sum') totalSum += s.value;
+      if (s.subType === 'count') totalCount += s.value;
+    }
+    const avg = totalCount > 0 ? (totalSum / totalCount) : 0;
+    cards.push({ label: 'Avg Stream Duration', value: formatDuration(avg), cls: 'warning', sub: `${formatNum(totalCount)} streams` });
+  }
+
+  if (cards.length === 0) {
+    statsRow.innerHTML = '';
+    return;
+  }
+
+  statsRow.innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="label">${c.label}</div>
+      <div class="value ${c.cls}">${c.value}</div>
+      ${c.sub ? `<div class="sub">${c.sub}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+/* ===== Render metrics ===== */
+function renderMetrics(metrics) {
+  const container = document.getElementById('metrics-container');
+  const names = Object.keys(metrics).sort();
+
+  if (names.length === 0) {
+    container.innerHTML = '';
+    document.getElementById('empty-state').style.display = 'block';
+    document.getElementById('stats-row').innerHTML = '';
+    return;
+  }
+
+  document.getElementById('empty-state').style.display = 'none';
+  buildStats(metrics);
+
+  // Group by type
+  const groups = { counter: [], histogram: [], gauge: [] };
+  for (const name of names) {
+    const m = metrics[name];
+    const t = m.type || 'counter';
+    if (groups[t]) groups[t].push(m);
+    else groups.counter.push(m);
+  }
+
+  let html = '';
+
+  // Counters
+  if (groups.counter.length > 0) {
+    html += `<div class="section-title">Counters <span class="badge">${groups.counter.length}</span></div>`;
+    for (const m of groups.counter) html += renderCounter(m);
+  }
+
+  // Histograms
+  if (groups.histogram.length > 0) {
+    html += `<div class="section-title">Histograms <span class="badge">${groups.histogram.length}</span></div>`;
+    for (const m of groups.histogram) html += renderHistogram(m);
+  }
+
+  // Gauges
+  if (groups.gauge.length > 0) {
+    html += `<div class="section-title">Gauges <span class="badge">${groups.gauge.length}</span></div>`;
+    for (const m of groups.gauge) html += renderGauge(m);
+  }
+
+  container.innerHTML = html;
+}
+
+function renderCounter(m) {
+  const dataSeries = m.series.filter(s => !s.subType);
+  if (dataSeries.length === 0) return '';
+
+  let rows = '';
+  for (const s of dataSeries) {
+    const lblHtml = formatLabels(s.labels);
+    rows += `<tr><td class="labels">${lblHtml}</td><td class="val">${formatNum(s.value)}</td></tr>`;
+  }
+
+  return `
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-name">${esc(m.promName)}</span>
+        <span class="metric-type type-counter">counter</span>
+      </div>
+      <div class="metric-help">${esc(m.help)}</div>
+      <table class="metric-table">
+        <thead><tr><th>Labels</th><th>Value</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderGauge(m) {
+  const dataSeries = m.series.filter(s => !s.subType);
+  if (dataSeries.length === 0) return '';
+
+  let rows = '';
+  for (const s of dataSeries) {
+    const lblHtml = formatLabels(s.labels);
+    rows += `<tr><td class="labels">${lblHtml}</td><td class="val">${formatNum(s.value)}</td></tr>`;
+  }
+
+  return `
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-name">${esc(m.promName)}</span>
+        <span class="metric-type type-gauge">gauge</span>
+      </div>
+      <div class="metric-help">${esc(m.help)}</div>
+      <table class="metric-table">
+        <thead><tr><th>Labels</th><th>Value</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderHistogram(m) {
+  // Group by label set (excluding 'le')
+  const bucketsByKey = {};
+  const summaryByKey = {};
+
+  for (const s of m.series) {
+    const key = labelKey(s.labels, ['le']);
+    if (!summaryByKey[key]) summaryByKey[key] = { labels: withoutKeys(s.labels, ['le']), count: 0, sum: 0, buckets: [] };
+
+    if (s.subType === 'bucket') {
+      summaryByKey[key].buckets.push({ le: s.labels.le || '+Inf', value: s.value });
+    } else if (s.subType === 'count') {
+      summaryByKey[key].count = s.value;
+    } else if (s.subType === 'sum') {
+      summaryByKey[key].sum = s.value;
+    }
+  }
+
+  const keys = Object.keys(summaryByKey).sort();
+  if (keys.length === 0) return '';
+
+  let html = `
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-name">${esc(m.promName)}</span>
+        <span class="metric-type type-histogram">histogram</span>
+      </div>
+      <div class="metric-help">${esc(m.help)}</div>`;
+
+  keys.forEach((key, seriesIdx) => {
+    const info = summaryByKey[key];
+    const avg = info.count > 0 ? info.sum / info.count : 0;
+    const lblHtml = formatLabels(info.labels);
+
+    html += `<div style="margin-bottom:16px">`;
+    if (lblHtml) html += `<div class="labels" style="margin-bottom:8px">${lblHtml}</div>`;
+    html += `<div style="display:flex;gap:20px;font-size:0.82rem;margin-bottom:8px;color:var(--text-secondary)">
+      <span>count: <strong style="color:var(--text-primary)">${formatNum(info.count)}</strong></span>
+      <span>sum: <strong style="color:var(--text-primary)">${formatDuration(info.sum)}</strong></span>
+      <span>avg: <strong style="color:var(--text-primary)">${formatDuration(avg)}</strong></span>
+    </div>`;
+
+    // Bucket bar chart
+    const buckets = info.buckets.sort((a, b) => {
+      const av = a.le === '+Inf' ? Infinity : parseFloat(a.le);
+      const bv = b.le === '+Inf' ? Infinity : parseFloat(b.le);
+      return av - bv;
+    });
+
+    if (buckets.length > 0) {
+      const maxVal = Math.max(...buckets.map(b => b.value), 1);
+      html += `<div class="hist-chart hist-series-${seriesIdx % 5}">`;
+      for (const b of buckets) {
+        const pct = (b.value / maxVal) * 100;
+        const leLabel = b.le === '+Inf' ? '+Inf' : formatBound(b.le);
+        html += `
+          <div class="hist-bar-row">
+            <span class="hist-bar-label">&le; ${leLabel}</span>
+            <div class="hist-bar-track">
+              <div class="hist-bar-fill" style="width:${pct}%"></div>
+            </div>
+            <span class="hist-bar-count">${formatNum(b.value)}</span>
+          </div>`;
+      }
+      html += `</div>`;
+    }
+
+    html += `</div>`;
+  });
+
+  html += `</div>`;
+  return html;
+}
+
+/* ===== Helpers ===== */
+function findMetric(metrics, keyword) {
+  for (const key of Object.keys(metrics)) {
+    if (key.includes(keyword)) return metrics[key];
+  }
+  return null;
+}
+
+function labelKey(labels, exclude) {
+  const filtered = Object.entries(labels).filter(([k]) => !exclude.includes(k)).sort((a, b) => a[0].localeCompare(b[0]));
+  return filtered.map(([k, v]) => `${k}=${v}`).join(',');
+}
+
+function withoutKeys(obj, keys) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!keys.includes(k)) out[k] = v;
+  }
+  return out;
+}
+
+function formatLabels(labels) {
+  const entries = Object.entries(labels).filter(([k]) => k !== 'service');
+  if (entries.length === 0) return '<span style="color:var(--text-muted)">-</span>';
+  return entries.map(([k, v]) => {
+    if (k === 'code') return formatCodeBadge(v);
+    return `<span>${esc(k)}="${esc(v)}"</span>`;
+  }).join(' ');
+}
+
+function formatCodeBadge(code) {
+  const c = parseInt(code, 10);
+  let cls = '';
+  if (c >= 200 && c < 300) cls = 'code-2xx';
+  else if (c >= 400 && c < 500) cls = 'code-4xx';
+  else if (c >= 500) cls = 'code-5xx';
+  return `<span class="code-badge ${cls}">${esc(code)}</span>`;
+}
+
+function formatNum(n) {
+  if (n === 0) return '0';
+  if (Number.isInteger(n)) return n.toLocaleString();
+  return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function formatDuration(seconds) {
+  if (seconds === 0) return '0s';
+  if (seconds < 0.001) return (seconds * 1_000_000).toFixed(0) + '\u00B5s';
+  if (seconds < 1) return (seconds * 1000).toFixed(1) + 'ms';
+  if (seconds < 60) return seconds.toFixed(2) + 's';
+  return (seconds / 60).toFixed(1) + 'min';
+}
+
+function formatBound(val) {
+  const n = parseFloat(val);
+  if (isNaN(n)) return val;
+  if (n < 0.001) return (n * 1_000_000) + '\u00B5s';
+  if (n < 1) return (n * 1000) + 'ms';
+  return n + 's';
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/* ===== Fetch & render ===== */
+async function fetchMetrics() {
+  const dot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+
+  try {
+    const res = await fetch('/api/metrics');
+    const text = await res.text();
+
+    document.getElementById('raw-text').textContent = text || '(empty)';
+
+    if (!text.trim()) {
+      renderMetrics({});
+      dot.classList.remove('error');
+      statusText.textContent = 'Connected — no metrics data yet';
+    } else {
+      const metrics = parsePrometheus(text);
+      renderMetrics(metrics);
+      dot.classList.remove('error');
+      const count = Object.keys(metrics).length;
+      statusText.textContent = `Connected — ${count} metric${count !== 1 ? 's' : ''}`;
+    }
+
+    document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    dot.classList.add('error');
+    statusText.textContent = 'Failed to fetch metrics: ' + err.message;
+    document.getElementById('last-updated').textContent = '';
+  }
+}
+
+/* ===== Init ===== */
+fetchMetrics();
+refreshTimer = setInterval(fetchMetrics, REFRESH_INTERVAL);
+</script>
+</body>
+</html>

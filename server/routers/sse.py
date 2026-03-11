@@ -8,6 +8,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from infra.log import logger
+from infra.telemetry.metrics import (
+    chat_request_total,
+    chat_request_duration,
+    chat_stream_duration,
+    chat_active_streams,
+    _token_prefix,
+)
 import services.state as state
 from services.bridge import CHAT_INBOX_PREFIX
 
@@ -16,6 +23,13 @@ router = APIRouter()
 _SSE_TIMEOUT = 300  # 5 minutes
 _SSE_BLOCK_MS = 1000  # XREADGROUP block timeout — short so we can send heartbeats
 _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
+
+
+def _record_request(status: str, code: int, token_prefix: str, t0: float) -> None:
+    """Record request counter + duration histogram for a given status."""
+    attrs = {"status": status, "code": str(code), "token_prefix": token_prefix}
+    chat_request_total.add(1, attrs)
+    chat_request_duration.record(time.time() - t0, attrs)
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +206,38 @@ async def _stream_with_cleanup(
     req_id: str,
 ):
     """Wrap _stream_response and delete the chat inbox stream when done."""
+    tp = _token_prefix(token)
+    stream_attrs = {"token_prefix": tp}
+
+    # Track active stream
+    chat_active_streams.add(1, stream_attrs)
+    stream_start = time.time()
+    close_reason = "done"
+
     try:
         async for event in _stream_response(token, session_id, session_number, req_id):
             yield event
+            # Detect close reason from terminal events
+            if event.startswith("event: error"):
+                if "Stream timeout" in event:
+                    close_reason = "timeout"
+                else:
+                    close_reason = "error"
+    except asyncio.CancelledError:
+        close_reason = "client_disconnect"
+        raise
+    except Exception:
+        close_reason = "error"
+        raise
     finally:
+        chat_active_streams.add(-1, stream_attrs)
+        stream_duration = time.time() - stream_start
+
+        chat_stream_duration.record(
+            stream_duration,
+            {"close_reason": close_reason, "token_prefix": tp},
+        )
+
         try:
             inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
             await state.queue.delete_queue(inbox)
@@ -212,13 +254,18 @@ async def chat_sse(
     body: ChatRequest,
     authorization: Optional[str] = Header(default=None),
 ):
+    t0 = time.time()
+
     # Authenticate
     token = await _authenticate(authorization)
     if not token:
+        _record_request("auth_fail", 401, "", t0)
         return JSONResponse(
             status_code=401,
             content={"ok": False, "error": "Invalid or missing token"},
         )
+
+    tp = _token_prefix(token)
 
     # Validate message content — normalize media URLs
     content = body.content or ""
@@ -228,18 +275,21 @@ async def chat_sse(
         for item in body.media:
             if item.type == "url":
                 if not item.content.startswith(("http://", "https://")):
+                    _record_request("bad_request", 400, tp, t0)
                     return JSONResponse(
                         status_code=400,
                         content={"ok": False, "error": f"Invalid media URL scheme: {item.content}"},
                     )
                 media_urls.append(item.content)
             else:
+                _record_request("bad_request", 400, tp, t0)
                 return JSONResponse(
                     status_code=400,
                     content={"ok": False, "error": f"Unsupported media type: {item.type}"},
                 )
 
     if not content and not media_urls:
+        _record_request("bad_request", 400, tp, t0)
         return JSONResponse(
             status_code=400,
             content={"ok": False, "error": "Empty message"},
@@ -247,6 +297,7 @@ async def chat_sse(
 
     # Check bot connected
     if not await state.bridge.is_bot_connected(token):
+        _record_request("no_bot", 400, tp, t0)
         return JSONResponse(
             status_code=400,
             content={"ok": False, "error": "No bot connected"},
@@ -256,6 +307,7 @@ async def chat_sse(
     try:
         session_id, session_number = await _resolve_session(token, body.sessionId)
     except ValueError as e:
+        _record_request("session_not_found", 404, tp, t0)
         return JSONResponse(
             status_code=404,
             content={"ok": False, "error": str(e)},
@@ -274,10 +326,14 @@ async def chat_sse(
         session_id=session_id,
     )
     if not req_id:
+        _record_request("send_fail", 500, tp, t0)
         return JSONResponse(
             status_code=500,
             content={"ok": False, "error": "Failed to send message to bot"},
         )
+
+    # Success — entering SSE stream
+    _record_request("success", 200, tp, t0)
 
     logger.info(
         "SSE: chat started req={} session={} (token={}...)",

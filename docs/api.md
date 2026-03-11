@@ -25,6 +25,8 @@ http://127.0.0.1:8765
 |---------|---------|
 | 健康检查 (`/api/health`) | 无需认证 |
 | Token 接口 (`/api/token/*`) | 无需认证 |
+| Metrics 接口 (`GET /api/metrics`, `GET /metrics`) | 无需认证 |
+| Metrics 重置 (`DELETE /api/metrics`) | `Authorization: Bearer <admin_session>` |
 | Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
 | 媒体上传 (`POST /api/media/upload`) | `Authorization: Bearer <token>`（仅 Header） |
 | HTTP SSE (`/bridge/chat`, `/bridge/chat/sessions`) | `Authorization: Bearer <token>` |
@@ -64,6 +66,10 @@ http://127.0.0.1:8765
 - [6. Media 接口](#6-media-接口)
   - [6.1 上传媒体文件](#61-上传媒体文件)
 - [7. 健康检查接口](#7-健康检查接口)
+- [8. Metrics 接口](#8-metrics-接口)
+  - [8.1 Metrics 可视化页面](#81-metrics-可视化页面)
+  - [8.2 获取 Prometheus 指标](#82-获取-prometheus-指标)
+  - [8.3 重置指标数据](#83-重置指标数据)
 
 ---
 
@@ -1499,3 +1505,311 @@ print(data["status"])  # "ok" or "degraded"
 | `4002` | 停止重试，提示用户已有 Bot 在线 |
 | `4003` | 停止重试，提示 Token 已被删除 |
 | 其他 | 指数退避重连 |
+
+---
+
+## 8. Metrics 接口
+
+OTLP 指标通过 Redis 聚合后，以 Prometheus exposition format 对外暴露。需启用环境变量 `OTLP_ENABLED=true`。
+
+### 8.1 Metrics 可视化页面
+
+浏览器访问，可视化展示所有指标的实时仪表盘。
+
+```
+GET /metrics
+```
+
+**响应：** HTML 页面（自动每 10 秒刷新数据）
+
+**包含内容：**
+- 汇总卡片：Total Requests、Active Streams、Avg Request Duration、Avg Stream Duration
+- Counter 指标表格（按 label 分行展示值）
+- Histogram 指标柱状图（bucket 分布 + count/sum/avg）
+- Gauge 指标表格
+- Raw 模式切换（查看原始 Prometheus 文本）
+
+**访问方式：**
+
+```
+http://127.0.0.1:8765/metrics
+```
+
+---
+
+### 8.2 获取 Prometheus 指标
+
+返回 Prometheus exposition format 文本，供 Prometheus Server 抓取或程序解析。
+
+```
+GET /api/metrics
+```
+
+**请求参数：** 无需认证
+
+**响应头：**
+
+| 头部 | 值 |
+|------|------|
+| `Content-Type` | `text/plain; version=0.0.4; charset=utf-8` |
+
+**响应示例：**
+
+```
+# HELP bridge_chat_requests_total /bridge/chat 请求总数
+# TYPE bridge_chat_requests_total counter
+bridge_chat_requests_total{code="200",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
+
+# HELP bridge_chat_request_duration_seconds /bridge/chat 首字节耗时
+# TYPE bridge_chat_request_duration_seconds histogram
+bridge_chat_request_duration_seconds_bucket{code="200",le="0.005",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 5
+bridge_chat_request_duration_seconds_bucket{code="200",le="0.01",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 18
+bridge_chat_request_duration_seconds_bucket{code="200",le="+Inf",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
+bridge_chat_request_duration_seconds_sum{code="200",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 1.234
+bridge_chat_request_duration_seconds_count{code="200",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
+
+# HELP bridge_chat_active_streams 当前活跃 SSE 流数量
+# TYPE bridge_chat_active_streams gauge
+bridge_chat_active_streams{service="astron-claw",token_prefix="sk-a1b2c3..."} 3
+```
+
+**指标清单：**
+
+| 指标名 | 类型 | 说明 | Labels |
+|--------|------|------|--------|
+| `bridge.chat.requests` | Counter | `/bridge/chat` 请求总数 | `status`, `code`, `token_prefix` |
+| `bridge.chat.request.duration` | Histogram | 首字节耗时（秒） | `status`, `code`, `token_prefix` |
+| `bridge.chat.stream.duration` | Histogram | SSE 流持续时长（秒） | `close_reason`, `token_prefix` |
+| `bridge.chat.active_streams` | UpDownCounter (Gauge) | 当前活跃 SSE 流数量 | `token_prefix` |
+
+**status / code label 取值：**
+
+| status | code | 说明 |
+|--------|------|------|
+| `success` | `200` | 请求成功，进入 SSE 流 |
+| `auth_fail` | `401` | Token 无效或缺失 |
+| `bad_request` | `400` | 参数错误（空消息、无效媒体等） |
+| `no_bot` | `400` | Bot 未连接 |
+| `session_not_found` | `404` | 指定会话不存在 |
+| `send_fail` | `500` | 发送到 Bot 失败 |
+
+**close_reason label 取值：**
+
+| 值 | 说明 |
+|----|------|
+| `done` | 正常结束 |
+| `error` | 流式错误 |
+| `timeout` | 5 分钟超时 |
+| `client_disconnect` | 客户端断开 |
+
+**Prometheus 接入配置：**
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: "astron-claw"
+    scrape_interval: 15s
+    metrics_path: /api/metrics
+    static_configs:
+      - targets: ["127.0.0.1:8765"]
+```
+
+**PromQL 查询示例：**
+
+> 以下查询中 Prometheus 指标名使用下划线（`bridge_chat_*`），即 OTel 名称中 `.` 自动转换为 `_`。
+
+#### 请求速率与成功率
+
+```promql
+# QPS — 每秒请求数（5 分钟窗口平滑）
+rate(bridge_chat_requests_total[5m])
+
+# 成功 QPS
+rate(bridge_chat_requests_total{code="200"}[5m])
+
+# 成功率（%）
+sum(rate(bridge_chat_requests_total{code="200"}[5m]))
+/
+sum(rate(bridge_chat_requests_total[5m]))
+* 100
+
+# 错误 QPS — 按 HTTP 状态码分组
+sum by (code) (
+  rate(bridge_chat_requests_total{code!="200"}[5m])
+)
+
+# 错误 QPS — 按业务错误类型分组
+sum by (status) (
+  rate(bridge_chat_requests_total{code!="200"}[5m])
+)
+
+# 4xx / 5xx 分组
+sum by (code) (
+  rate(bridge_chat_requests_total{code=~"4.."}[5m])
+)
+sum by (code) (
+  rate(bridge_chat_requests_total{code=~"5.."}[5m])
+)
+
+# 某个 Token 的请求速率
+rate(bridge_chat_requests_total{token_prefix="sk-a1b2c3..."}[5m])
+```
+
+#### 请求耗时（首字节延迟）
+
+```promql
+# P50 延迟（中位数）
+histogram_quantile(0.5,
+  sum by (le) (rate(bridge_chat_request_duration_seconds_bucket[5m]))
+)
+
+# P95 延迟
+histogram_quantile(0.95,
+  sum by (le) (rate(bridge_chat_request_duration_seconds_bucket[5m]))
+)
+
+# P99 延迟
+histogram_quantile(0.99,
+  sum by (le) (rate(bridge_chat_request_duration_seconds_bucket[5m]))
+)
+
+# 按 status 分组的 P95 延迟
+histogram_quantile(0.95,
+  sum by (le, status) (rate(bridge_chat_request_duration_seconds_bucket[5m]))
+)
+
+# 平均请求耗时
+sum(rate(bridge_chat_request_duration_seconds_sum[5m]))
+/
+sum(rate(bridge_chat_request_duration_seconds_count[5m]))
+```
+
+#### SSE 流时长
+
+```promql
+# 流式连接平均持续时长
+sum(rate(bridge_chat_stream_duration_seconds_sum[5m]))
+/
+sum(rate(bridge_chat_stream_duration_seconds_count[5m]))
+
+# P95 流式时长
+histogram_quantile(0.95,
+  sum by (le) (rate(bridge_chat_stream_duration_seconds_bucket[5m]))
+)
+
+# 按关闭原因分组的流式连接速率
+sum by (close_reason) (
+  rate(bridge_chat_stream_duration_seconds_count[5m])
+)
+
+# 超时 / 客户端断连比例
+sum(rate(bridge_chat_stream_duration_seconds_count{close_reason=~"timeout|client_disconnect"}[5m]))
+/
+sum(rate(bridge_chat_stream_duration_seconds_count[5m]))
+```
+
+#### 活跃连接
+
+```promql
+# 当前活跃 SSE 流总数
+sum(bridge_chat_active_streams)
+
+# 按 Token 分组的活跃流数
+sum by (token_prefix) (bridge_chat_active_streams)
+```
+
+#### Grafana 告警规则参考
+
+```yaml
+# 成功率低于 95% 持续 5 分钟
+- alert: AstronClawHighErrorRate
+  expr: |
+    sum(rate(bridge_chat_requests_total{code="200"}[5m]))
+    / sum(rate(bridge_chat_requests_total[5m]))
+    < 0.95
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Chat 请求成功率低于 95%"
+
+# P95 延迟超过 2 秒
+- alert: AstronClawHighLatency
+  expr: |
+    histogram_quantile(0.95,
+      sum by (le) (rate(bridge_chat_request_duration_seconds_bucket[5m]))
+    ) > 2
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Chat 请求 P95 延迟超过 2s"
+
+# 活跃流数量异常高
+- alert: AstronClawTooManyStreams
+  expr: sum(bridge_chat_active_streams) > 100
+  for: 3m
+  labels:
+    severity: critical
+  annotations:
+    summary: "活跃 SSE 流数量超过 100"
+```
+
+**测试代码：**
+
+```bash
+# 获取 Prometheus 格式指标
+curl http://127.0.0.1:8765/api/metrics
+```
+
+```python
+import requests
+
+resp = requests.get("http://127.0.0.1:8765/api/metrics")
+print(resp.text)
+```
+
+---
+
+### 8.3 重置指标数据
+
+删除 Redis 中所有 OTLP 指标数据。需要 Admin 认证。
+
+```
+DELETE /api/metrics
+```
+
+**请求头：**
+
+| 头部 | 值 | 说明 |
+|------|------|------|
+| `Authorization` | `Bearer <admin_session>` | Admin Session Token |
+
+**响应：**
+
+| 状态码 | 说明 |
+|--------|------|
+| `200` | 重置成功 |
+| `401` | 未认证或 Session 无效 |
+
+**成功响应：**
+
+```json
+{"ok": true, "message": "All metrics reset"}
+```
+
+**测试代码：**
+
+```bash
+# 需先通过 /api/admin/auth/login 获取 admin_session
+curl -X DELETE http://127.0.0.1:8765/api/metrics \
+  -H "Authorization: Bearer <admin_session_token>"
+```
+
+```python
+# admin_session 需从登录接口获取
+resp = requests.delete("http://127.0.0.1:8765/api/metrics", headers={
+    "Authorization": f"Bearer {admin_session}"
+})
+print(resp.json())  # {'ok': True, 'message': 'All metrics reset'}
+```
