@@ -67,7 +67,7 @@ class TestConsume:
         assert result is None
         redis.exists.assert_awaited_once_with("my:stream")
         redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
-        redis.xtrim.assert_awaited_once_with("my:stream", maxlen=0)
+        redis.xdel.assert_awaited_once_with("my:stream", redis.xadd.return_value)
         redis.xgroup_create.assert_awaited_once_with(
             "my:stream", "grp", id="$",
         )
@@ -103,7 +103,7 @@ class TestEnsureGroup:
         await queue.ensure_group("my:stream", "grp")
         redis.exists.assert_awaited_once_with("my:stream")
         redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
-        redis.xtrim.assert_awaited_once_with("my:stream", maxlen=0)
+        redis.xdel.assert_awaited_once_with("my:stream", redis.xadd.return_value)
         redis.xgroup_create.assert_awaited_once_with(
             "my:stream", "grp", id="$",
         )
@@ -115,7 +115,7 @@ class TestEnsureGroup:
         await queue.ensure_group("my:stream", "grp")
         redis.exists.assert_awaited_once_with("my:stream")
         redis.xadd.assert_not_awaited()
-        redis.xtrim.assert_not_awaited()
+        redis.xdel.assert_not_awaited()
         redis.xgroup_create.assert_awaited_once_with(
             "my:stream", "grp", id="$",
         )

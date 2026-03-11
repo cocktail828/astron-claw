@@ -180,8 +180,8 @@ class RedisStreamQueue(MessageQueue):
             # can cause encoding issues (bytes vs str) on RedisCluster
             # with ``decode_responses=True``.
             if not await self._redis.exists(queue_name):
-                await self._redis.xadd(queue_name, {"_init": "1"})
-                await self._redis.xtrim(queue_name, maxlen=0)
+                entry_id = await self._redis.xadd(queue_name, {"_init": "1"})
+                await self._redis.xdel(queue_name, entry_id)
 
             await self._redis.xgroup_create(
                 queue_name,
