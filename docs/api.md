@@ -1228,21 +1228,38 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 
 ### 5.4 发送回复完成
 
-回复结束时发送 JSON-RPC Response（携带 `id`）：
+回复结束时发送 JSON-RPC Response（携带 `id` 和 `sessionId`）：
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": "req_a1b2c3d4e5f6",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
   "result": {
     "stopReason": "end_turn"
   }
 }
 ```
 
-> `id` 必须与收到的请求 `id` 一致。
+> `id` 必须与收到的请求 `id` 一致。`sessionId` 必须与收到的请求 `params.sessionId` 一致，用于跨 Worker 响应路由。
 >
-> **注意：** JSON-RPC Response 仅用于请求跟踪清理，不会产生 `done` 事件。Chat 端收到的 `done` 事件来自 `agent_message_final` Notification（见 [5.3](#53-发送流式更新)）。Bot 端应在发送完所有流式更新后，先发送 `agent_message_final`，再发送此 JSON-RPC Response。
+> **注意：** JSON-RPC Response 仅用于请求跟踪和错误路由，不会产生 `done` 事件。Chat 端收到的 `done` 事件来自 `agent_message_final` Notification（见 [5.3](#53-发送流式更新)）。Bot 端应在发送完所有流式更新后，先发送 `agent_message_final`，再发送此 JSON-RPC Response。
+
+**错误响应示例：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req_a1b2c3d4e5f6",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "error": {
+    "code": -32000,
+    "message": "Dispatch not available"
+  }
+}
+```
+
+> 错误响应同样需要携带 `sessionId`，服务端据此将错误事件路由到对应的 Chat 客户端 SSE 流。
 
 ---
 
@@ -1270,6 +1287,7 @@ async def bot(token: str):
                 continue
 
             request_id = msg["id"]
+            session_id = msg["params"]["sessionId"]
             user_text = msg["params"]["prompt"]["content"][0]["content"]
             print(f"User: {user_text}")
 
@@ -1302,6 +1320,7 @@ async def bot(token: str):
             await ws.send(json.dumps({
                 "jsonrpc": "2.0",
                 "id": request_id,
+                "sessionId": session_id,
                 "result": {"stopReason": "end_turn"}
             }))
             print(f"Bot: {reply}")

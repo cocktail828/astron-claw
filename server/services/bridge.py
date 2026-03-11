@@ -54,8 +54,6 @@ class ConnectionBridge:
         self._worker_id = uuid.uuid4().hex[:12]
         # token -> bot WebSocket (process-local)
         self._bots: dict[str, WebSocket] = {}
-        # request_id -> (token, session_id) for targeted response routing
-        self._pending_requests: dict[str, tuple[str, str]] = {}
         # Redis client for cross-worker state
         self._redis = redis
         # Session persistence layer (MySQL + Redis cache)
@@ -125,17 +123,27 @@ class ConnectionBridge:
     # ── Bot registration (multi-worker safe) ─────────────────────────────────
 
     async def register_bot(self, token: str, ws: WebSocket) -> bool:
-        """Register a bot connection. Returns False if a live bot is already connected."""
+        """Register a bot connection. Returns False if a live bot is already connected.
+
+        Uses ZADD NX for atomic registration to prevent race conditions
+        between workers competing to register the same token.
+        """
         if token in self._bots:
             return False
 
-        # Check if another worker holds a live bot for this token
-        score = await self._redis.zscore(_BOT_ALIVE_KEY, token)
-        if score is not None and (time.time() - score) < _BOT_TTL:
-            return False
+        # Atomic: only succeeds if token is NOT already in the ZSET
+        added = await self._redis.zadd(
+            _BOT_ALIVE_KEY, {token: time.time()}, nx=True,
+        )
+        if not added:
+            # Another worker registered first, or stale heartbeat remains
+            score = await self._redis.zscore(_BOT_ALIVE_KEY, token)
+            if score is not None and (time.time() - score) < _BOT_TTL:
+                return False
+            # Stale heartbeat expired — overwrite only if our timestamp is newer
+            await self._redis.zadd(_BOT_ALIVE_KEY, {token: time.time()}, gt=True)
 
         self._bots[token] = ws
-        await self._redis.zadd(_BOT_ALIVE_KEY, {token: time.time()})
         # Ensure consumer group exists and start consuming bot inbox
         inbox = f"{_BOT_INBOX_PREFIX}{token}"
         await self._queue.ensure_group(inbox, "bot")
@@ -147,10 +155,6 @@ class ConnectionBridge:
     async def unregister_bot(self, token: str) -> None:
         """Remove bot from local dict + clean up Redis and inboxes."""
         self._bots.pop(token, None)
-        # Purge pending requests belonging to this token to prevent memory leak
-        stale = [rid for rid, (t, _) in self._pending_requests.items() if t == token]
-        for rid in stale:
-            self._pending_requests.pop(rid, None)
         # Stop bot inbox consuming
         task_key = f"bot:{token}"
         task = self._poll_tasks.pop(task_key, None)
@@ -248,7 +252,6 @@ class ConnectionBridge:
             return None
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
-        self._pending_requests[request_id] = (token, session_id)
 
         # Build prompt content
         content_items = []
@@ -262,7 +265,6 @@ class ConnectionBridge:
 
         if not content_items:
             logger.error("send_to_bot called with empty content (token={}...)", token[:10])
-            self._pending_requests.pop(request_id, None)
             return None
 
         rpc_request = {
@@ -283,7 +285,6 @@ class ConnectionBridge:
             await self._queue.publish(inbox, json.dumps({"rpc_request": rpc_request}))
         except Exception:
             logger.exception("Failed to push to bot inbox (token={}...)", token[:10])
-            self._pending_requests.pop(request_id, None)
             return None
         logger.info("Sent to bot (inbox): req={} media={} (token={}...)", request_id, len(media_urls or []), token[:10])
         return request_id
@@ -320,20 +321,18 @@ class ConnectionBridge:
                 logger.warning("Bot event dropped: method={} untranslatable (token={}...)", method, token[:10])
 
         if "id" in msg and "result" in msg:
-            info = self._pending_requests.pop(msg["id"], None)
-            session_id = info[1] if info else None
+            session_id = msg.get("sessionId")
             logger.info("Bot result: req={} session={} (token={}...)", msg["id"], session_id[:8] if session_id else "?", token[:10])
 
         if "id" in msg and "error" in msg:
-            info = self._pending_requests.pop(msg["id"], None)
+            session_id = msg.get("sessionId")
             error_msg = msg["error"].get("message", "Unknown error from bot")
             logger.error("Bot JSON-RPC error: {} (token={}...)", error_msg, token[:10])
             error_event = {"type": "error", "content": error_msg}
-            session_id = info[1] if info else None
             if session_id:
                 await self._send_to_session(token, session_id, error_event)
             else:
-                logger.warning("Cannot route RPC error: no pending request (token={}...)", token[:10])
+                logger.warning("Cannot route RPC error: missing sessionId in response (token={}...)", token[:10])
 
     # ── Bot status logging ──────────────────────────────────────────────────
 
@@ -423,7 +422,6 @@ class ConnectionBridge:
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
             await self._cleanup_chat_inboxes(token)
         self._bots.clear()
-        self._pending_requests.clear()
 
         # Cancel all polling tasks
         for task in self._poll_tasks.values():

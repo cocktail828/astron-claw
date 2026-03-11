@@ -22,7 +22,7 @@ def bridge(mock_redis, mock_session_store, mock_queue):
 class TestRegisterBot:
     async def test_register_bot_success(self, bridge, mock_redis, mock_queue):
         ws = AsyncMock()
-        mock_redis.zscore.return_value = None  # no existing bot
+        mock_redis.zadd.return_value = 1  # ZADD NX succeeds
         result = await bridge.register_bot("tok-1", ws)
         assert result is True
         assert "tok-1" in bridge._bots
@@ -33,26 +33,41 @@ class TestRegisterBot:
 
     async def test_register_bot_local_dup(self, bridge, mock_redis):
         ws1, ws2 = AsyncMock(), AsyncMock()
-        mock_redis.zscore.return_value = None
+        mock_redis.zadd.return_value = 1
         await bridge.register_bot("tok-1", ws1)
 
         result = await bridge.register_bot("tok-1", ws2)
         assert result is False
 
     async def test_register_bot_remote_alive(self, bridge, mock_redis):
-        """Reject registration when another worker has a live bot for this token."""
+        """Reject registration when another worker has a live bot (ZADD NX fails + fresh score)."""
         ws = AsyncMock()
+        mock_redis.zadd.return_value = 0  # ZADD NX fails — member exists
         mock_redis.zscore.return_value = time.time() - 5  # fresh (within 30s)
         result = await bridge.register_bot("tok-remote", ws)
         assert result is False
+        assert "tok-remote" not in bridge._bots
 
     async def test_register_bot_remote_expired(self, bridge, mock_redis, mock_queue):
-        """Allow registration when the existing bot's heartbeat has expired."""
+        """Allow registration when ZADD NX fails but existing heartbeat is stale."""
         ws = AsyncMock()
+        # First zadd (NX) fails, second zadd (force overwrite) succeeds
+        mock_redis.zadd.side_effect = [0, 1]
         mock_redis.zscore.return_value = time.time() - 60  # stale (>30s)
         result = await bridge.register_bot("tok-stale", ws)
         assert result is True
         assert "tok-stale" in bridge._bots
+        # ZADD called twice: first NX attempt, then force overwrite
+        assert mock_redis.zadd.await_count == 2
+
+    async def test_register_bot_atomic_prevents_race(self, bridge, mock_redis):
+        """When ZADD NX fails and score is fresh, second worker is rejected."""
+        ws = AsyncMock()
+        mock_redis.zadd.return_value = 0  # NX fails
+        mock_redis.zscore.return_value = time.time() - 1  # very fresh
+        result = await bridge.register_bot("tok-race", ws)
+        assert result is False
+        assert "tok-race" not in bridge._bots
 
 
 class TestSendToBot:
@@ -60,7 +75,6 @@ class TestSendToBot:
         req_id = await bridge.send_to_bot("tok-1", "hello", session_id="session-id-1")
         assert req_id is not None
         assert req_id.startswith("req_")
-        assert bridge._pending_requests[req_id] == ("tok-1", "session-id-1")
 
         mock_queue.publish.assert_awaited_once()
         inbox_key, payload_str = mock_queue.publish.call_args[0]
@@ -136,6 +150,11 @@ class TestSendToBot:
         assert req_id is None
         mock_queue.publish.assert_not_awaited()
 
+    async def test_send_to_bot_no_pending_requests(self, bridge, mock_queue):
+        """send_to_bot should not store any process-local pending request state."""
+        await bridge.send_to_bot("tok-1", "hello", session_id="session-id-1")
+        assert not hasattr(bridge, "_pending_requests")
+
 
 class TestHandleBotMessage:
     async def test_handle_bot_message_invalid_json(self, bridge):
@@ -167,32 +186,24 @@ class TestHandleBotMessage:
         assert payload["type"] == "chunk"
         assert payload["content"] == "hello"
 
-    async def test_routes_result_to_pending_request_session(self, bridge, mock_queue):
-        """JSON-RPC result cleans up pending request but does NOT push a done event.
-
-        The done event is already sent by agent_message_final notification,
-        so the result only needs to clean up _pending_requests.
-        """
-        bridge._pending_requests["req_123"] = ("tok-1", "session-xyz")
-
+    async def test_routes_result_with_session_id(self, bridge, mock_queue):
+        """JSON-RPC result with sessionId is logged but does NOT push a done event."""
         msg = {
             "jsonrpc": "2.0",
             "id": "req_123",
+            "sessionId": "session-xyz",
             "result": {"stopReason": "end_turn"},
         }
         await bridge.handle_bot_message("tok-1", json.dumps(msg))
         mock_queue.publish.assert_not_awaited()
-        # Pending request should be cleaned up
-        assert "req_123" not in bridge._pending_requests
 
-    async def test_routes_error_to_pending_request_session(self, bridge, mock_redis, mock_queue):
-        """JSON-RPC error is routed to the session that made the request."""
+    async def test_routes_error_with_session_id(self, bridge, mock_redis, mock_queue):
+        """JSON-RPC error with sessionId is routed to that session's chat inbox."""
         mock_redis.exists.return_value = 1  # SSE consumer active
-        bridge._pending_requests["req_456"] = ("tok-1", "session-xyz")
-
         msg = {
             "jsonrpc": "2.0",
             "id": "req_456",
+            "sessionId": "session-xyz",
             "error": {"code": -1, "message": "Bot failed"},
         }
         await bridge.handle_bot_message("tok-1", json.dumps(msg))
@@ -203,18 +214,26 @@ class TestHandleBotMessage:
         assert payload["type"] == "error"
         assert payload["content"] == "Bot failed"
 
-    async def test_remote_session_gets_inbox_push(self, bridge, mock_queue):
-        """JSON-RPC result only cleans up pending request, no inbox push."""
-        bridge._pending_requests["req_789"] = ("tok-1", "session-remote")
-
+    async def test_error_without_session_id_not_routed(self, bridge, mock_queue):
+        """JSON-RPC error without sessionId cannot be routed — logged as warning."""
         msg = {
             "jsonrpc": "2.0",
             "id": "req_789",
-            "result": {"stopReason": "end_turn"},
+            "error": {"code": -1, "message": "Old bot error"},
         }
         await bridge.handle_bot_message("tok-1", json.dumps(msg))
         mock_queue.publish.assert_not_awaited()
-        assert "req_789" not in bridge._pending_requests
+
+    async def test_result_without_session_id_still_logs(self, bridge, mock_queue):
+        """JSON-RPC result without sessionId is logged (backward compat with old plugins)."""
+        msg = {
+            "jsonrpc": "2.0",
+            "id": "req_old",
+            "result": {"stopReason": "end_turn"},
+        }
+        # Should not raise
+        await bridge.handle_bot_message("tok-1", json.dumps(msg))
+        mock_queue.publish.assert_not_awaited()
 
 
 class TestGetConnectionsSummary:
@@ -336,7 +355,7 @@ class TestPollBotInbox:
 class TestUnregisterBot:
     async def test_unregister_cleans_redis_and_inboxes(self, bridge, mock_redis, mock_queue):
         ws = AsyncMock()
-        mock_redis.zscore.return_value = None
+        mock_redis.zadd.return_value = 1
         await bridge.register_bot("tok-1", ws)
 
         await bridge.unregister_bot("tok-1")
