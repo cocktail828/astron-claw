@@ -25,9 +25,9 @@ _SSE_BLOCK_MS = 1000  # XREADGROUP block timeout — short so we can send heartb
 _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 
 
-def _record_request(status: str, token_prefix: str, t0: float) -> None:
+def _record_request(status: str, code: int, token_prefix: str, t0: float) -> None:
     """Record request counter + duration histogram for a given status."""
-    attrs = {"status": status, "token_prefix": token_prefix}
+    attrs = {"status": status, "code": str(code), "token_prefix": token_prefix}
     chat_request_total.add(1, attrs)
     chat_request_duration.record(time.time() - t0, attrs)
 
@@ -259,7 +259,7 @@ async def chat_sse(
     # Authenticate
     token = await _authenticate(authorization)
     if not token:
-        _record_request("auth_fail", "", t0)
+        _record_request("auth_fail", 401, "", t0)
         return JSONResponse(
             status_code=401,
             content={"ok": False, "error": "Invalid or missing token"},
@@ -275,21 +275,21 @@ async def chat_sse(
         for item in body.media:
             if item.type == "url":
                 if not item.content.startswith(("http://", "https://")):
-                    _record_request("bad_request", tp, t0)
+                    _record_request("bad_request", 400, tp, t0)
                     return JSONResponse(
                         status_code=400,
                         content={"ok": False, "error": f"Invalid media URL scheme: {item.content}"},
                     )
                 media_urls.append(item.content)
             else:
-                _record_request("bad_request", tp, t0)
+                _record_request("bad_request", 400, tp, t0)
                 return JSONResponse(
                     status_code=400,
                     content={"ok": False, "error": f"Unsupported media type: {item.type}"},
                 )
 
     if not content and not media_urls:
-        _record_request("bad_request", tp, t0)
+        _record_request("bad_request", 400, tp, t0)
         return JSONResponse(
             status_code=400,
             content={"ok": False, "error": "Empty message"},
@@ -297,7 +297,7 @@ async def chat_sse(
 
     # Check bot connected
     if not await state.bridge.is_bot_connected(token):
-        _record_request("no_bot", tp, t0)
+        _record_request("no_bot", 400, tp, t0)
         return JSONResponse(
             status_code=400,
             content={"ok": False, "error": "No bot connected"},
@@ -307,7 +307,7 @@ async def chat_sse(
     try:
         session_id, session_number = await _resolve_session(token, body.sessionId)
     except ValueError as e:
-        _record_request("session_not_found", tp, t0)
+        _record_request("session_not_found", 404, tp, t0)
         return JSONResponse(
             status_code=404,
             content={"ok": False, "error": str(e)},
@@ -326,14 +326,14 @@ async def chat_sse(
         session_id=session_id,
     )
     if not req_id:
-        _record_request("send_fail", tp, t0)
+        _record_request("send_fail", 500, tp, t0)
         return JSONResponse(
             status_code=500,
             content={"ok": False, "error": "Failed to send message to bot"},
         )
 
     # Success — entering SSE stream
-    _record_request("success", tp, t0)
+    _record_request("success", 200, tp, t0)
 
     logger.info(
         "SSE: chat started req={} session={} (token={}...)",

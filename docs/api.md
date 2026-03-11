@@ -1558,15 +1558,15 @@ GET /api/metrics
 ```
 # HELP bridge_chat_requests_total /bridge/chat 请求总数
 # TYPE bridge_chat_requests_total counter
-bridge_chat_requests_total{service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
+bridge_chat_requests_total{code="200",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
 
 # HELP bridge_chat_request_duration_seconds /bridge/chat 首字节耗时
 # TYPE bridge_chat_request_duration_seconds histogram
-bridge_chat_request_duration_seconds_bucket{le="0.005",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 5
-bridge_chat_request_duration_seconds_bucket{le="0.01",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 18
-bridge_chat_request_duration_seconds_bucket{le="+Inf",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
-bridge_chat_request_duration_seconds_sum{service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 1.234
-bridge_chat_request_duration_seconds_count{service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
+bridge_chat_request_duration_seconds_bucket{code="200",le="0.005",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 5
+bridge_chat_request_duration_seconds_bucket{code="200",le="0.01",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 18
+bridge_chat_request_duration_seconds_bucket{code="200",le="+Inf",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
+bridge_chat_request_duration_seconds_sum{code="200",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 1.234
+bridge_chat_request_duration_seconds_count{code="200",service="astron-claw",status="success",token_prefix="sk-a1b2c3..."} 42
 
 # HELP bridge_chat_active_streams 当前活跃 SSE 流数量
 # TYPE bridge_chat_active_streams gauge
@@ -1577,21 +1577,21 @@ bridge_chat_active_streams{service="astron-claw",token_prefix="sk-a1b2c3..."} 3
 
 | 指标名 | 类型 | 说明 | Labels |
 |--------|------|------|--------|
-| `bridge.chat.requests` | Counter | `/bridge/chat` 请求总数 | `status`, `token_prefix` |
-| `bridge.chat.request.duration` | Histogram | 首字节耗时（秒） | `status`, `token_prefix` |
+| `bridge.chat.requests` | Counter | `/bridge/chat` 请求总数 | `status`, `code`, `token_prefix` |
+| `bridge.chat.request.duration` | Histogram | 首字节耗时（秒） | `status`, `code`, `token_prefix` |
 | `bridge.chat.stream.duration` | Histogram | SSE 流持续时长（秒） | `close_reason`, `token_prefix` |
 | `bridge.chat.active_streams` | UpDownCounter (Gauge) | 当前活跃 SSE 流数量 | `token_prefix` |
 
-**status label 取值：**
+**status / code label 取值：**
 
-| 值 | 说明 |
-|----|------|
-| `success` | 请求成功，进入 SSE 流 |
-| `auth_fail` | Token 无效或缺失 |
-| `bad_request` | 参数错误（空消息、无效媒体等） |
-| `no_bot` | Bot 未连接 |
-| `session_not_found` | 指定会话不存在 |
-| `send_fail` | 发送到 Bot 失败 |
+| status | code | 说明 |
+|--------|------|------|
+| `success` | `200` | 请求成功，进入 SSE 流 |
+| `auth_fail` | `401` | Token 无效或缺失 |
+| `bad_request` | `400` | 参数错误（空消息、无效媒体等） |
+| `no_bot` | `400` | Bot 未连接 |
+| `session_not_found` | `404` | 指定会话不存在 |
+| `send_fail` | `500` | 发送到 Bot 失败 |
 
 **close_reason label 取值：**
 
@@ -1625,17 +1625,30 @@ scrape_configs:
 rate(bridge_chat_requests_total[5m])
 
 # 成功 QPS
-rate(bridge_chat_requests_total{status="success"}[5m])
+rate(bridge_chat_requests_total{code="200"}[5m])
 
 # 成功率（%）
-sum(rate(bridge_chat_requests_total{status="success"}[5m]))
+sum(rate(bridge_chat_requests_total{code="200"}[5m]))
 /
 sum(rate(bridge_chat_requests_total[5m]))
 * 100
 
-# 错误 QPS — 按错误类型分组
+# 错误 QPS — 按 HTTP 状态码分组
+sum by (code) (
+  rate(bridge_chat_requests_total{code!="200"}[5m])
+)
+
+# 错误 QPS — 按业务错误类型分组
 sum by (status) (
-  rate(bridge_chat_requests_total{status!="success"}[5m])
+  rate(bridge_chat_requests_total{code!="200"}[5m])
+)
+
+# 4xx / 5xx 分组
+sum by (code) (
+  rate(bridge_chat_requests_total{code=~"4.."}[5m])
+)
+sum by (code) (
+  rate(bridge_chat_requests_total{code=~"5.."}[5m])
 )
 
 # 某个 Token 的请求速率
@@ -1711,7 +1724,7 @@ sum by (token_prefix) (bridge_chat_active_streams)
 # 成功率低于 95% 持续 5 分钟
 - alert: AstronClawHighErrorRate
   expr: |
-    sum(rate(bridge_chat_requests_total{status="success"}[5m]))
+    sum(rate(bridge_chat_requests_total{code="200"}[5m]))
     / sum(rate(bridge_chat_requests_total[5m]))
     < 0.95
   for: 5m
