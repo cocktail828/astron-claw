@@ -145,7 +145,7 @@ async def _stream_response(
                     yield _sse_comment()
                     last_heartbeat = now
                 else:
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(0.1)
                 continue
 
             msg_id, raw = result
