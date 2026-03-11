@@ -262,7 +262,8 @@ POST /api/admin/auth/setup
 **失败响应：**
 
 ```json
-{"error": "Password already set"}
+{"ok": false, "error": "Password already set", "code": "ADMIN_PASSWORD_EXISTS"}
+{"ok": false, "error": "Password too short", "code": "ADMIN_PASSWORD_SHORT"}
 ```
 
 **测试代码：**
@@ -323,7 +324,7 @@ POST /api/admin/auth/login
 **失败响应：**
 
 ```json
-{"error": "Wrong password"}
+{"ok": false, "error": "Wrong password", "code": "AUTH_WRONG_PASSWORD"}
 ```
 
 **测试代码：**
@@ -574,7 +575,7 @@ PATCH /api/admin/tokens/{token_value}
 **失败响应：**
 
 ```json
-{"error": "Token not found"}
+{"ok": false, "error": "Token not found", "code": "TOKEN_NOT_FOUND"}
 ```
 
 **测试代码：**
@@ -740,9 +741,9 @@ POST /bridge/chat
 | `500` | 发送到 Bot 失败 |
 
 ```json
-{"ok": false, "error": "Empty message"}
-{"ok": false, "error": "No bot connected"}
-{"ok": false, "error": "Invalid or missing token"}
+{"ok": false, "error": "Empty message", "code": "CHAT_EMPTY_MESSAGE"}
+{"ok": false, "error": "No bot connected", "code": "CHAT_NO_BOT"}
+{"ok": false, "error": "Invalid or missing token", "code": "AUTH_INVALID_TOKEN"}
 ```
 
 ---
@@ -1475,6 +1476,41 @@ print(data["status"])  # "ok" or "degraded"
 ---
 
 ## 错误码汇总
+
+### 统一错误响应格式
+
+所有 HTTP 错误响应统一为以下结构：
+
+```json
+{"ok": false, "error": "Human-readable error message", "code": "ERROR_CODE"}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ok` | boolean | 始终为 `false` |
+| `error` | string | 人类可读的错误描述（可含动态详情，如 `"Session not found: <id>"`) |
+| `code` | string | 程序化错误码，客户端可用于 switch/match 判断 |
+
+### 错误码清单
+
+| 错误码 | HTTP 状态码 | 消息 | 使用场景 |
+|--------|-----------|------|---------|
+| `AUTH_INVALID_TOKEN` | 401 | Invalid or missing token | Token 无效或缺失 |
+| `AUTH_MISSING_AUTH` | 401 | Missing authorization | 缺少 Authorization Header |
+| `AUTH_INVALID_SESSION` | 401 | Invalid admin session | Admin Session 无效或过期 |
+| `AUTH_UNAUTHORIZED` | 401 | Unauthorized | Admin 未认证 |
+| `AUTH_WRONG_PASSWORD` | 401 | Wrong password | 管理员登录密码错误 |
+| `ADMIN_PASSWORD_EXISTS` | 400 | Password already set | 重复设置密码 |
+| `ADMIN_PASSWORD_SHORT` | 400 | Password too short | 密码少于 4 个字符 |
+| `CHAT_EMPTY_MESSAGE` | 400 | Empty message | 消息内容和媒体均为空 |
+| `CHAT_NO_BOT` | 400 | No bot connected | Token 对应的 Bot 未在线 |
+| `CHAT_SEND_FAILED` | 500 | Failed to send message to bot | 消息推送到 Bot 失败 |
+| `MEDIA_FILE_TOO_LARGE` | 413 | File too large | 文件超过大小限制 |
+| `MEDIA_INVALID_FILE` | 400 | Invalid file or unsupported type | 无效文件或不支持的类型 |
+| `MEDIA_BAD_URL_SCHEME` | 400 | Invalid media URL scheme | 媒体 URL 非 http/https |
+| `MEDIA_UNSUPPORTED_TYPE` | 400 | Unsupported media type | 不支持的媒体类型 |
+| `SESSION_NOT_FOUND` | 404 | Session not found | 指定的会话不存在 |
+| `TOKEN_NOT_FOUND` | 404 | Token not found | 指定的 Token 不存在 |
 
 ### HTTP 状态码
 

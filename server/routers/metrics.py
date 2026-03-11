@@ -6,9 +6,10 @@ DELETE /api/metrics — Reset all metrics (admin).
 from typing import Optional
 
 from fastapi import APIRouter, Header
-from fastapi.responses import PlainTextResponse, JSONResponse, HTMLResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse
 
 from infra.cache import get_redis
+from infra.errors import Err, error_response
 from infra.log import logger
 from infra.telemetry.reader import render_prometheus_exposition, reset_all_metrics
 import services.state as state
@@ -43,26 +44,17 @@ async def delete_metrics(
     # Reuse admin session validation
     if not authorization or not authorization.lower().startswith("bearer "):
         logger.warning("Metrics reset rejected: invalid authorization")
-        return JSONResponse(
-            status_code=401,
-            content={"ok": False, "error": "Missing authorization"},
-        )
+        return error_response(Err.AUTH_MISSING_AUTH)
 
     session_token = authorization[7:].strip()
     if not session_token:
         logger.warning("Metrics reset rejected: invalid authorization")
-        return JSONResponse(
-            status_code=401,
-            content={"ok": False, "error": "Missing authorization"},
-        )
+        return error_response(Err.AUTH_MISSING_AUTH)
 
     is_valid = await state.admin_auth.validate_session(session_token)
     if not is_valid:
         logger.warning("Metrics reset rejected: invalid admin session")
-        return JSONResponse(
-            status_code=401,
-            content={"ok": False, "error": "Invalid admin session"},
-        )
+        return error_response(Err.AUTH_INVALID_SESSION)
 
     redis = get_redis()
     await reset_all_metrics(redis)

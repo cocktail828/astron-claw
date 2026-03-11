@@ -1,5 +1,6 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
+from infra.errors import Err
 from infra.log import logger
 import services.state as state
 
@@ -14,15 +15,15 @@ async def ws_bot(
     bot_token = token or (ws.headers.get("x-astron-bot-token", ""))
     if not await state.token_manager.validate(bot_token):
         await ws.accept()
-        await ws.close(code=4001, reason="Invalid or missing bot token")
+        await ws.close(code=Err.WS_INVALID_TOKEN.status, reason=Err.WS_INVALID_TOKEN.message)
         logger.warning("Bot connection rejected: invalid token {}...", bot_token[:10])
         return
 
     await ws.accept()
 
     if not await state.bridge.register_bot(bot_token, ws):
-        await ws.send_json({"error": "Another bot is already connected with this token"})
-        await ws.close(code=4002, reason="Bot already connected")
+        await ws.send_json({"error": Err.WS_DUPLICATE_BOT.message})
+        await ws.close(code=Err.WS_DUPLICATE_BOT.status, reason=Err.WS_DUPLICATE_BOT.message)
         logger.warning("Bot connection rejected: duplicate token {}...", bot_token[:10])
         return
 

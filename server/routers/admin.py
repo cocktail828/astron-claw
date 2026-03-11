@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Cookie, Query
-from fastapi.responses import JSONResponse
 
+from infra.errors import Err, error_response
 from infra.log import logger
 import services.state as state
 
@@ -10,7 +10,7 @@ router = APIRouter()
 async def _require_admin(admin_session: str | None):
     if not await state.admin_auth.validate_session(admin_session):
         logger.warning("Admin auth rejected: missing or invalid session cookie")
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return error_response(Err.AUTH_UNAUTHORIZED)
     return None
 
 
@@ -105,7 +105,7 @@ async def admin_update_token(token_value: str, body: dict, admin_session: str | 
     name = body.get("name")
     expires_in = body.get("expires_in")
     if not await state.token_manager.update(token_value, name=name, expires_in=expires_in):
-        return JSONResponse({"error": "Token not found"}, status_code=404)
+        return error_response(Err.TOKEN_NOT_FOUND)
     logger.info("Admin updated token: {}...", token_value[:16])
     return {"ok": True}
 
