@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from infra.log import logger
 from infra.storage.base import ObjectStorage
 
 if TYPE_CHECKING:
@@ -29,9 +30,11 @@ def create_storage(config: StorageConfig) -> ObjectStorage:
     if config.type == "s3":
         from infra.storage.s3 import S3Storage
 
+        logger.info("Storage backend: {} (endpoint={})", config.type, config.endpoint)
         return S3Storage(config)
     if config.type == "ifly_gateway":
         from infra.storage.ifly_gateway import IFlyGatewayStorage
 
+        logger.info("Storage backend: {} (endpoint={})", config.type, config.endpoint)
         return IFlyGatewayStorage(config)
     raise ValueError(f"Unknown storage type: '{config.type}'")

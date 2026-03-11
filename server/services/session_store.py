@@ -142,7 +142,7 @@ class SessionStore:
                 try:
                     await self._redis.delete(f"{_SESSIONS_PREFIX}{token}")
                 except Exception:
-                    pass
+                    logger.warning("Redis cache invalidation failed during session cleanup (token={}...)", token[:10])
 
             await db.commit()
             count = len(old_sessions)

@@ -44,7 +44,12 @@ class TokenManager:
                     Token.expires_at >= time.time(),
                 )
             )
-            return row.scalar_one_or_none() is not None
+            valid = row.scalar_one_or_none() is not None
+        if valid:
+            logger.debug("Token validated: {}...", token[:10])
+        else:
+            logger.debug("Token validation failed: {}...", token[:10])
+        return valid
 
     async def update(
         self, token: str, name: str | None = None, expires_in: int | None = None

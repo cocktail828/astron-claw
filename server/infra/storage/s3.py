@@ -1,6 +1,7 @@
 """S3/MinIO storage backend using aiobotocore."""
 
 import json
+import time
 from typing import TYPE_CHECKING, BinaryIO, Union
 from urllib.parse import quote
 
@@ -48,12 +49,14 @@ class S3Storage(ObjectStorage):
             region_name=self._config.region,
         )
         self._client = await self._client_ctx.__aenter__()
+        logger.info("S3 client initialised (endpoint={})", self._config.endpoint)
 
     async def close(self) -> None:
         if self._client_ctx:
             await self._client_ctx.__aexit__(None, None, None)
             self._client_ctx = None
             self._client = None
+            logger.info("S3 client closed")
 
     def _get_client(self) -> "S3Client":
         if self._client is None:
@@ -123,7 +126,15 @@ class S3Storage(ObjectStorage):
         if content_length is not None:
             kwargs["ContentLength"] = content_length
 
-        await client.put_object(**kwargs)
+        t0 = time.time()
+        try:
+            await client.put_object(**kwargs)
+            elapsed = time.time() - t0
+            logger.info("S3 put: key={} type={} took={:.1f}ms", key, content_type, elapsed * 1000)
+        except Exception:
+            elapsed = time.time() - t0
+            logger.exception("S3 put failed: key={} took={:.1f}ms", key, elapsed * 1000)
+            raise
 
         # URL-encode the key so that filenames with spaces, CJK chars, #, ?
         # etc. produce a valid download URL.

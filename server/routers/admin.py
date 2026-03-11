@@ -9,6 +9,7 @@ router = APIRouter()
 
 async def _require_admin(admin_session: str | None):
     if not await state.admin_auth.validate_session(admin_session):
+        logger.warning("Admin auth rejected: missing or invalid session cookie")
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return None
 

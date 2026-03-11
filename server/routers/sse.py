@@ -259,6 +259,7 @@ async def chat_sse(
     # Authenticate
     token = await _authenticate(authorization)
     if not token:
+        logger.warning("SSE: auth failed (token missing or invalid)")
         _record_request("auth_fail", 401, "", t0)
         return JSONResponse(
             status_code=401,
@@ -275,6 +276,7 @@ async def chat_sse(
         for item in body.media:
             if item.type == "url":
                 if not item.content.startswith(("http://", "https://")):
+                    logger.warning("SSE: bad request — invalid media URL scheme: {} (token={}...)", item.content, token[:10])
                     _record_request("bad_request", 400, tp, t0)
                     return JSONResponse(
                         status_code=400,
@@ -282,6 +284,7 @@ async def chat_sse(
                     )
                 media_urls.append(item.content)
             else:
+                logger.warning("SSE: bad request — unsupported media type: {} (token={}...)", item.type, token[:10])
                 _record_request("bad_request", 400, tp, t0)
                 return JSONResponse(
                     status_code=400,
@@ -289,6 +292,7 @@ async def chat_sse(
                 )
 
     if not content and not media_urls:
+        logger.warning("SSE: bad request — empty message (token={}...)", token[:10])
         _record_request("bad_request", 400, tp, t0)
         return JSONResponse(
             status_code=400,
@@ -297,6 +301,7 @@ async def chat_sse(
 
     # Check bot connected
     if not await state.bridge.is_bot_connected(token):
+        logger.warning("SSE: no bot connected (token={}...)", token[:10])
         _record_request("no_bot", 400, tp, t0)
         return JSONResponse(
             status_code=400,
@@ -307,6 +312,7 @@ async def chat_sse(
     try:
         session_id, session_number = await _resolve_session(token, body.sessionId)
     except ValueError as e:
+        logger.warning("SSE: session not found {} (token={}...)", body.sessionId, token[:10])
         _record_request("session_not_found", 404, tp, t0)
         return JSONResponse(
             status_code=404,
@@ -326,6 +332,7 @@ async def chat_sse(
         session_id=session_id,
     )
     if not req_id:
+        logger.error("SSE: send_to_bot failed (token={}...)", token[:10])
         _record_request("send_fail", 500, tp, t0)
         return JSONResponse(
             status_code=500,
@@ -361,6 +368,7 @@ async def list_sessions(
 ):
     validated = await _authenticate(authorization)
     if not validated:
+        logger.warning("SSE: sessions auth failed (list)")
         return JSONResponse(
             status_code=401,
             content={"ok": False, "error": "Invalid or missing token"},
@@ -384,6 +392,7 @@ async def create_session(
 ):
     validated = await _authenticate(authorization)
     if not validated:
+        logger.warning("SSE: sessions auth failed (create)")
         return JSONResponse(
             status_code=401,
             content={"ok": False, "error": "Invalid or missing token"},

@@ -55,4 +55,5 @@ async def upload_media(
         logger.warning("Media upload rejected: invalid file (name={}, mime={})", file_name, mime_type)
         return JSONResponse({"error": "Invalid file or unsupported type"}, status_code=400)
 
+    logger.info("Media uploaded: {} ({} bytes) token={}...", file_name, file_size, token[:10])
     return result

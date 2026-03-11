@@ -32,6 +32,9 @@ async def _ensure_database(config: MysqlConfig) -> None:
                 f"DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
             )
         logger.info("Ensured database '{}' exists", config.database)
+    except Exception:
+        logger.exception("Failed to ensure database '{}'", config.database)
+        raise
     finally:
         conn.close()
 
@@ -61,8 +64,12 @@ async def init_db(config: MysqlConfig) -> None:
     )
 
     # Verify connectivity
-    async with _engine.connect() as conn:
-        await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+    try:
+        async with _engine.connect() as conn:
+            await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+    except Exception:
+        logger.exception("MySQL connectivity check failed")
+        raise
 
     logger.info("MySQL connected: {}:{}/{}", config.host, config.port, config.database)
 

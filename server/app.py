@@ -29,28 +29,48 @@ async def lifespan(app: FastAPI):
     config = load_config()
 
     # Initialize MySQL
-    await init_db(config.mysql)
+    try:
+        await init_db(config.mysql)
+    except Exception:
+        logger.exception("Failed to initialise MySQL")
+        raise
     session_factory = get_session_factory()
 
     # Initialize Redis
-    redis = await init_redis(config.redis)
+    try:
+        redis = await init_redis(config.redis)
+    except Exception:
+        logger.exception("Failed to initialise Redis")
+        raise
 
     # Initialize OTLP telemetry (NoOp if disabled)
     # Pass RedisConfig (not async client) — exporter creates its own sync client
-    await init_telemetry(config.otlp, config.redis)
-    ensure_instruments()
+    try:
+        await init_telemetry(config.otlp, config.redis)
+        ensure_instruments()
+    except Exception:
+        logger.exception("Failed to initialise OTLP telemetry")
+        raise
 
     # Auto-run pending database migrations (distributed-lock protected)
-    await run_migrations(redis, config.mysql.url)
+    try:
+        await run_migrations(redis, config.mysql.url)
+    except Exception:
+        logger.exception("Failed to run database migrations")
+        raise
 
     # Initialize managers and publish to shared state
     state.token_manager = TokenManager(session_factory)
     state.admin_auth = AdminAuth(session_factory, redis)
 
     # Initialize object storage
-    storage = create_storage(config.storage)
-    await storage.start()
-    await storage.ensure_bucket()
+    try:
+        storage = create_storage(config.storage)
+        await storage.start()
+        await storage.ensure_bucket()
+    except Exception:
+        logger.exception("Failed to initialise object storage")
+        raise
     state.media_manager = MediaManager(storage)
 
     session_store = SessionStore(session_factory, redis)

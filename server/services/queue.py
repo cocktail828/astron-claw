@@ -106,6 +106,7 @@ class RedisStreamQueue(MessageQueue):
             maxlen=self._max_len,
             approximate=True,
         )
+        logger.debug("Queue publish: stream={} msg_id={}", queue_name, entry_id)
         return entry_id
 
     # -- consume -------------------------------------------------------------
@@ -129,6 +130,7 @@ class RedisStreamQueue(MessageQueue):
             # NOGROUP — group hasn't been created yet (race on first call)
             err_msg = str(exc)
             if "NOGROUP" in err_msg:
+                logger.warning("Queue NOGROUP: stream={} group={}, recreated", queue_name, group)
                 await self.ensure_group(queue_name, group)
                 return None
             raise
@@ -142,27 +144,32 @@ class RedisStreamQueue(MessageQueue):
             return None
 
         entry_id, fields = entries[0]
+        logger.debug("Queue consume: stream={} group={} msg_id={}", queue_name, group, entry_id)
         return (entry_id, fields.get("data", ""))
 
     # -- ack -----------------------------------------------------------------
 
     async def ack(self, queue_name: str, group: str, message_id: str) -> None:
         await self._redis.xack(queue_name, group, message_id)
+        logger.debug("Queue ack: stream={} msg_id={}", queue_name, message_id)
 
     # -- delete_message ------------------------------------------------------
 
     async def delete_message(self, queue_name: str, message_id: str) -> None:
         await self._redis.xdel(queue_name, message_id)
+        logger.debug("Queue delete_message: stream={} msg_id={}", queue_name, message_id)
 
     # -- delete_queue --------------------------------------------------------
 
     async def delete_queue(self, queue_name: str) -> None:
         await self._redis.delete(queue_name)
+        logger.debug("Queue delete_queue: stream={}", queue_name)
 
     # -- purge ---------------------------------------------------------------
 
     async def purge(self, queue_name: str) -> None:
         await self._redis.xtrim(queue_name, maxlen=0)
+        logger.debug("Queue purge: stream={}", queue_name)
 
     # -- ensure_group --------------------------------------------------------
 
@@ -177,6 +184,7 @@ class RedisStreamQueue(MessageQueue):
         except Exception as exc:
             # BUSYGROUP — group already exists, safe to ignore
             if "BUSYGROUP" in str(exc):
+                logger.debug("Queue ensure_group: stream={} group={} (already exists)", queue_name, group)
                 return
             raise
 
