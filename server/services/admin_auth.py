@@ -78,14 +78,21 @@ class AdminAuth:
     async def create_session(self) -> str:
         token = secrets.token_hex(32)
         await self._redis.setex(f"{_SESSION_PREFIX}{token}", SESSION_TTL, "1")
+        logger.debug("Admin session created")
         return token
 
     async def validate_session(self, session_token: str | None) -> bool:
         if not session_token:
             return False
         result = await self._redis.exists(f"{_SESSION_PREFIX}{session_token}")
-        return result > 0
+        valid = result > 0
+        if valid:
+            logger.debug("Admin session validated")
+        else:
+            logger.debug("Admin session invalid or expired")
+        return valid
 
     async def remove_session(self, session_token: str | None) -> None:
         if session_token:
             await self._redis.delete(f"{_SESSION_PREFIX}{session_token}")
+            logger.debug("Admin session removed")

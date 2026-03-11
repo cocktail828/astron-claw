@@ -87,7 +87,9 @@ def _validate_oss_type(value: str) -> str:
 
 
 def load_config() -> AppConfig:
-    return AppConfig(
+    from infra.log import logger
+
+    c = AppConfig(
         mysql=MysqlConfig(
             host=os.getenv("MYSQL_HOST", "127.0.0.1"),
             port=int(os.getenv("MYSQL_PORT", "3306")),
@@ -136,3 +138,10 @@ def load_config() -> AppConfig:
             logs_enabled=False,
         ),
     )
+    logger.info(
+        "Config loaded: redis={}:{} mysql={}:{}/{} workers={} storage={} otlp={}",
+        c.redis.host, c.redis.port,
+        c.mysql.host, c.mysql.port, c.mysql.database,
+        c.server.workers, c.storage.type, c.otlp.enabled,
+    )
+    return c

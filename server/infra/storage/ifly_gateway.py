@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import BinaryIO, Union
 from urllib.parse import urlencode
 
@@ -29,11 +30,13 @@ class IFlyGatewayStorage(ObjectStorage):
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession()
+        logger.info("iFlytek Gateway client initialised")
 
     async def close(self) -> None:
         if self._session:
             await self._session.close()
             self._session = None
+            logger.info("iFlytek Gateway client closed")
 
     async def ensure_bucket(self) -> None:
         """iFlytek Gateway does not require pre-creating buckets."""
@@ -81,38 +84,46 @@ class IFlyGatewayStorage(ObjectStorage):
         headers["X-TTL"] = str(self._config.ttl)
         headers["Content-Length"] = str(len(file_bytes))
 
-        async with self._session.post(url, headers=headers, data=file_bytes) as resp:
-            response_text = await resp.text()
-            if resp.status != 200:
-                raise RuntimeError(
-                    f"iFlytek Gateway upload failed: "
-                    f"status={resp.status}, body={response_text[:500]}"
-                )
+        t0 = time.time()
+        try:
+            async with self._session.post(url, headers=headers, data=file_bytes) as resp:
+                response_text = await resp.text()
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"iFlytek Gateway upload failed: "
+                        f"status={resp.status}, body={response_text[:500]}"
+                    )
 
-            try:
-                ret = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                raise RuntimeError(
-                    f"iFlytek Gateway returned invalid JSON: {response_text[:200]}"
-                ) from e
+                try:
+                    ret = json.loads(response_text)
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(
+                        f"iFlytek Gateway returned invalid JSON: {response_text[:200]}"
+                    ) from e
 
-            if ret.get("code") != 0:
-                raise RuntimeError(
-                    f"iFlytek Gateway upload rejected: "
-                    f"code={ret.get('code')}, body={response_text}"
-                )
+                if ret.get("code") != 0:
+                    raise RuntimeError(
+                        f"iFlytek Gateway upload rejected: "
+                        f"code={ret.get('code')}, body={response_text}"
+                    )
 
-            try:
-                link = ret["data"]["link"]
-            except KeyError as e:
-                raise RuntimeError(
-                    f"iFlytek Gateway response missing expected field: {e}, body={response_text}"
-                ) from e
+                try:
+                    link = ret["data"]["link"]
+                except KeyError as e:
+                    raise RuntimeError(
+                        f"iFlytek Gateway response missing expected field: {e}, body={response_text}"
+                    ) from e
+
+            elapsed = time.time() - t0
             logger.info(
-                "Stored media via iFlytek Gateway: bucket={}, key={}",
-                self._config.bucket, key,
+                "iFlytek put: key={} size={} took={:.1f}ms",
+                key, len(file_bytes), elapsed * 1000,
             )
             return link
+        except Exception:
+            elapsed = time.time() - t0
+            logger.exception("iFlytek put failed: key={} took={:.1f}ms", key, elapsed * 1000)
+            raise
 
     @property
     def bucket(self) -> str:

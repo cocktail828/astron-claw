@@ -181,7 +181,7 @@ class ConnectionBridge:
             try:
                 await bot_ws.close(code=4003, reason="Token deleted")
             except Exception:
-                pass
+                logger.warning("Failed to close bot WebSocket during token removal (token={}...)", token[:10])
             await self.unregister_bot(token)
         else:
             # Bot may be on a remote worker — push disconnect command to inbox
@@ -389,7 +389,7 @@ class ConnectionBridge:
                         try:
                             await bot_ws.close(code=4003, reason="Token deleted")
                         except Exception:
-                            pass
+                            logger.warning("Failed to close bot WebSocket on disconnect command (token={}...)", token[:10])
                     logger.info("Inbox: received disconnect for bot (token={}...)", token[:10])
                     break
                 bot_ws = self._bots.get(token)
@@ -417,7 +417,7 @@ class ConnectionBridge:
             try:
                 await ws.close(code=4000, reason="Server restarting")
             except Exception:
-                pass
+                logger.debug("WebSocket close error during shutdown (ignored)")
             await self._redis.zrem(_BOT_ALIVE_KEY, token)
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
             await self._cleanup_chat_inboxes(token)
@@ -430,7 +430,7 @@ class ConnectionBridge:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Poll task cancelled during shutdown")
         self._poll_tasks.clear()
 
         if self._heartbeat_task:
@@ -438,7 +438,7 @@ class ConnectionBridge:
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Heartbeat task cancelled during shutdown")
 
         logger.info("Bridge worker {} shutdown complete", self._worker_id)
 

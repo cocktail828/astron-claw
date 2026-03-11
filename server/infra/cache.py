@@ -26,7 +26,11 @@ async def init_redis(config: RedisConfig) -> Redis | RedisCluster:
             decode_responses=True,
         )
 
-    await _redis.ping()
+    try:
+        await _redis.ping()
+    except Exception:
+        logger.exception("Redis connection failed: {}:{}", config.host, config.port)
+        raise
     mode = "cluster" if config.cluster else "standalone"
     logger.info("Redis connected ({}): {}:{}", mode, config.host, config.port)
     return _redis
