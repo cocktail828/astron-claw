@@ -185,7 +185,11 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     route = { sessionKey: `${PLUGIN_ID}:${peerId}` };
   }
 
-  const sessionKey = route?.sessionKey ?? `${PLUGIN_ID}:${peerId}`;
+  // Always suffix with peerId (= sessionId) to guarantee session isolation.
+  // SDK routing may return a shared sessionKey (e.g. based on accountId only),
+  // which causes concurrent dispatches for different sessions to collide.
+  const routeBase = route?.sessionKey ?? PLUGIN_ID;
+  const sessionKey = routeBase.endsWith(peerId) ? routeBase : `${routeBase}:${peerId}`;
 
   // Build envelope body (same as DingTalk's formatInboundEnvelope)
   let body = effectiveText;
