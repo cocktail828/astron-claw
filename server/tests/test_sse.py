@@ -268,7 +268,7 @@ class TestListSessionsEndpoint:
             )
             from routers.sse import list_sessions
             resp = await list_sessions(authorization="Bearer sk-valid")
-            assert resp["ok"] is True
+            assert resp["code"] == 0
             assert len(resp["sessions"]) == 2
             assert "activeSessionId" not in resp
 
@@ -290,7 +290,7 @@ class TestCreateSessionEndpoint:
             )
             from routers.sse import create_session
             resp = await create_session(authorization="Bearer sk-valid")
-            assert resp["ok"] is True
+            assert resp["code"] == 0
             assert resp["sessionId"] == "sid-new"
             assert resp["sessionNumber"] == 3
             assert len(resp["sessions"]) == 2

@@ -65,6 +65,7 @@ async def list_tokens(
     page_items = filtered[offset:offset + page_size]
 
     return {
+        "code": 0,
         "tokens": page_items,
         "total": total,
         "page": page,
@@ -83,7 +84,7 @@ async def admin_create_token(body: dict = {}, admin_session: str | None = Cookie
     expires_in = body.get("expires_in", 86400)
     token = await state.token_manager.generate(name=name, expires_in=expires_in)
     logger.info("Admin created token: {}... (name={})", token[:16], name)
-    return {"token": token}
+    return {"code": 0, "token": token}
 
 
 @router.delete("/api/admin/tokens/{token_value}")
@@ -94,7 +95,7 @@ async def admin_delete_token(token_value: str, admin_session: str | None = Cooki
     await state.token_manager.remove(token_value)
     await state.bridge.remove_bot_sessions(token_value)
     logger.info("Admin deleted token: {}...", token_value[:16])
-    return {"ok": True}
+    return {"code": 0}
 
 
 @router.patch("/api/admin/tokens/{token_value}")
@@ -107,7 +108,7 @@ async def admin_update_token(token_value: str, body: dict, admin_session: str | 
     if not await state.token_manager.update(token_value, name=name, expires_in=expires_in):
         return error_response(Err.TOKEN_NOT_FOUND)
     logger.info("Admin updated token: {}...", token_value[:16])
-    return {"ok": True}
+    return {"code": 0}
 
 
 @router.post("/api/admin/cleanup")
@@ -118,4 +119,4 @@ async def admin_cleanup(admin_session: str | None = Cookie(default=None)):
     token_count = await state.token_manager.cleanup_expired()
     session_count = await state.bridge.cleanup_old_sessions(max_age_days=30)
     logger.info("Admin cleanup: removed {} tokens, {} sessions", token_count, session_count)
-    return {"removed_tokens": token_count, "removed_sessions": session_count}
+    return {"code": 0, "removed_tokens": token_count, "removed_sessions": session_count}

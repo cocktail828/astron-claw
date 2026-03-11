@@ -354,7 +354,7 @@ async def list_sessions(
     sessions = await state.bridge.get_sessions(validated)
 
     return {
-        "ok": True,
+        "code": 0,
         "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
     }
 
@@ -376,7 +376,7 @@ async def create_session(
     sessions = await state.bridge.get_sessions(validated)
 
     return {
-        "ok": True,
+        "code": 0,
         "sessionId": session_id,
         "sessionNumber": session_number,
         "sessions": [{"id": s[0], "number": s[1]} for s in sessions],

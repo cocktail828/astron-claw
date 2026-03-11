@@ -11,6 +11,7 @@ router = APIRouter()
 @router.get("/api/admin/auth/status")
 async def admin_auth_status(admin_session: str | None = Cookie(default=None)):
     return {
+        "code": 0,
         "need_setup": not await state.admin_auth.is_password_set(),
         "authenticated": await state.admin_auth.validate_session(admin_session),
     }
@@ -26,7 +27,7 @@ async def admin_auth_setup(body: dict):
     await state.admin_auth.set_password(password)
     session = await state.admin_auth.create_session()
     logger.info("Admin password set up for the first time")
-    resp = JSONResponse({"ok": True})
+    resp = JSONResponse({"code": 0})
     resp.set_cookie(
         key="admin_session", value=session,
         httponly=True, path="/", samesite="lax", max_age=86400,
@@ -42,7 +43,7 @@ async def admin_auth_login(body: dict):
         return error_response(Err.AUTH_WRONG_PASSWORD)
     session = await state.admin_auth.create_session()
     logger.info("Admin logged in successfully")
-    resp = JSONResponse({"ok": True})
+    resp = JSONResponse({"code": 0})
     resp.set_cookie(
         key="admin_session", value=session,
         httponly=True, path="/", samesite="lax", max_age=86400,
@@ -54,6 +55,6 @@ async def admin_auth_login(body: dict):
 async def admin_auth_logout(admin_session: str | None = Cookie(default=None)):
     await state.admin_auth.remove_session(admin_session)
     logger.info("Admin logged out")
-    resp = JSONResponse({"ok": True})
+    resp = JSONResponse({"code": 0})
     resp.delete_cookie(key="admin_session", path="/")
     return resp

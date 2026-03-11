@@ -75,9 +75,9 @@ class Err(Enum):
         self.message = message
 
     @property
-    def code(self) -> str:
-        """Return the enum member name as the programmatic error code."""
-        return self.name
+    def code(self) -> int:
+        """Return the HTTP status code as the integer error code."""
+        return self.status or 0
 
 
 def error_response(err: Err, detail: str = "") -> JSONResponse:
@@ -89,11 +89,10 @@ def error_response(err: Err, detail: str = "") -> JSONResponse:
                 (e.g. the invalid value).
 
     Returns:
-        A :class:`JSONResponse` with body
-        ``{"ok": false, "error": "...", "code": "ERR_NAME"}``.
+        A :class:`JSONResponse` with body ``{"code": 401, "error": "..."}``.
     """
     message = f"{err.message}: {detail}" if detail else err.message
     return JSONResponse(
         status_code=err.status,
-        content={"ok": False, "error": message, "code": err.code},
+        content={"code": err.code, "error": message},
     )

@@ -53,4 +53,4 @@ async def upload_media(
         return error_response(Err.MEDIA_INVALID_FILE)
 
     logger.info("Media uploaded: {} ({} bytes) token={}...", file_name, file_size, token[:10])
-    return result
+    return {"code": 0, **result}
