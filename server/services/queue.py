@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 
 from infra.log import logger
 
@@ -183,13 +184,23 @@ class RedisStreamQueue(MessageQueue):
                 entry_id = await self._redis.xadd(queue_name, {"_init": "1"})
                 await self._redis.xdel(queue_name, entry_id)
 
-            # Use execute_command with separate "XGROUP" and "CREATE"
-            # tokens.  The high-level xgroup_create() packs them into a
-            # single "XGROUP CREATE" string in args[0], which prevents
-            # RedisCluster._determine_slot from locating the key.
-            await self._redis.execute_command(
-                "XGROUP", "CREATE", queue_name, group, "$",
-            )
+            # RedisCluster._determine_slot cannot resolve the key
+            # position for XGROUP subcommands (neither the high-level
+            # xgroup_create() nor execute_command with split tokens work).
+            # Bypass slot detection entirely by computing the target node
+            # from the key ourselves.
+            if isinstance(self._redis, RedisCluster):
+                node = self._redis.nodes_manager.get_node_from_slot(
+                    self._redis.keyslot(queue_name),
+                )
+                await self._redis.execute_command(
+                    "XGROUP", "CREATE", queue_name, group, "$",
+                    target_nodes=node,
+                )
+            else:
+                await self._redis.xgroup_create(
+                    queue_name, group, id="$",
+                )
         except Exception as exc:
             # BUSYGROUP — group already exists, safe to ignore
             if "BUSYGROUP" in str(exc):
