@@ -296,6 +296,9 @@ class ConnectionBridge:
             return
 
         if msg.get("type") == "ping":
+            ws = self._bots.get(token)
+            if ws:
+                await ws.send_text("pong")
             return
 
         method = msg.get("method", "")
