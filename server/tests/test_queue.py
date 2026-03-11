@@ -61,15 +61,14 @@ class TestConsume:
             "NOGROUP No such key 'my:stream' or consumer group 'grp'"
         )
         redis.exists.return_value = 0
-        redis.xgroup_create = AsyncMock()
 
         result = await queue.consume("my:stream", "grp", "c1")
         assert result is None
         redis.exists.assert_awaited_once_with("my:stream")
         redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
         redis.xdel.assert_awaited_once_with("my:stream", redis.xadd.return_value)
-        redis.xgroup_create.assert_awaited_once_with(
-            "my:stream", "grp", id="$",
+        redis.execute_command.assert_awaited_once_with(
+            "XGROUP", "CREATE", "my:stream", "grp", "$",
         )
 
     async def test_reraises_non_nogroup_error(self, queue, redis):
@@ -99,37 +98,35 @@ class TestPurge:
 class TestEnsureGroup:
     async def test_creates_group(self, queue, redis):
         redis.exists.return_value = 0
-        redis.xgroup_create = AsyncMock()
         await queue.ensure_group("my:stream", "grp")
         redis.exists.assert_awaited_once_with("my:stream")
         redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
         redis.xdel.assert_awaited_once_with("my:stream", redis.xadd.return_value)
-        redis.xgroup_create.assert_awaited_once_with(
-            "my:stream", "grp", id="$",
+        redis.execute_command.assert_awaited_once_with(
+            "XGROUP", "CREATE", "my:stream", "grp", "$",
         )
 
     async def test_creates_group_stream_exists(self, queue, redis):
         """When the stream already exists, skip xadd/xtrim."""
         redis.exists.return_value = 1
-        redis.xgroup_create = AsyncMock()
         await queue.ensure_group("my:stream", "grp")
         redis.exists.assert_awaited_once_with("my:stream")
         redis.xadd.assert_not_awaited()
         redis.xdel.assert_not_awaited()
-        redis.xgroup_create.assert_awaited_once_with(
-            "my:stream", "grp", id="$",
+        redis.execute_command.assert_awaited_once_with(
+            "XGROUP", "CREATE", "my:stream", "grp", "$",
         )
 
     async def test_ignores_busygroup(self, queue, redis):
         """BUSYGROUP means the group already exists — should be silently ignored."""
         from redis.exceptions import ResponseError
-        redis.xgroup_create = AsyncMock(
+        redis.execute_command = AsyncMock(
             side_effect=ResponseError("BUSYGROUP Consumer Group name already exists")
         )
         await queue.ensure_group("my:stream", "grp")  # should not raise
 
     async def test_reraises_other_errors(self, queue, redis):
-        redis.xgroup_create = AsyncMock(side_effect=RuntimeError("Boom"))
+        redis.execute_command = AsyncMock(side_effect=RuntimeError("Boom"))
         with pytest.raises(RuntimeError, match="Boom"):
             await queue.ensure_group("my:stream", "grp")
 

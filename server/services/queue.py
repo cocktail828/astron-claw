@@ -183,10 +183,12 @@ class RedisStreamQueue(MessageQueue):
                 entry_id = await self._redis.xadd(queue_name, {"_init": "1"})
                 await self._redis.xdel(queue_name, entry_id)
 
-            await self._redis.xgroup_create(
-                queue_name,
-                group,
-                id="$",
+            # Use execute_command with separate "XGROUP" and "CREATE"
+            # tokens.  The high-level xgroup_create() packs them into a
+            # single "XGROUP CREATE" string in args[0], which prevents
+            # RedisCluster._determine_slot from locating the key.
+            await self._redis.execute_command(
+                "XGROUP", "CREATE", queue_name, group, "$",
             )
         except Exception as exc:
             # BUSYGROUP — group already exists, safe to ignore
