@@ -86,8 +86,8 @@ class RedisStreamQueue(MessageQueue):
     """``MessageQueue`` backed by Redis Streams.
 
     Each *queue_name* maps to a single Redis Stream key.  Consumer groups
-    are created lazily via :meth:`ensure_group` using ``MKSTREAM`` so the
-    underlying key is also auto-created if absent.
+    are created lazily via :meth:`ensure_group` which auto-creates the
+    underlying key if absent.
 
     Compatible with both Redis standalone and Redis Cluster (every
     operation touches a single key).
@@ -175,11 +175,18 @@ class RedisStreamQueue(MessageQueue):
 
     async def ensure_group(self, queue_name: str, group: str) -> None:
         try:
+            # Manually ensure the stream key exists before creating the
+            # consumer group.  This avoids passing ``mkstream=True`` which
+            # can cause encoding issues (bytes vs str) on RedisCluster
+            # with ``decode_responses=True``.
+            if not await self._redis.exists(queue_name):
+                await self._redis.xadd(queue_name, {"_init": "1"})
+                await self._redis.xtrim(queue_name, maxlen=0)
+
             await self._redis.xgroup_create(
                 queue_name,
                 group,
                 id="$",
-                mkstream=True,
             )
         except Exception as exc:
             # BUSYGROUP — group already exists, safe to ignore
