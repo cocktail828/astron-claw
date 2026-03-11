@@ -30,4 +30,4 @@ async def health_check():
     status = "ok" if (mysql_ok and redis_ok) else "degraded"
     if status == "degraded":
         logger.warning("Health check degraded — MySQL={}, Redis={}", mysql_ok, redis_ok)
-    return {"status": status, "mysql": mysql_ok, "redis": redis_ok}
+    return {"code": 0, "status": status, "mysql": mysql_ok, "redis": redis_ok}

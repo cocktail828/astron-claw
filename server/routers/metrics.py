@@ -59,4 +59,4 @@ async def delete_metrics(
     redis = get_redis()
     await reset_all_metrics(redis)
     logger.info("Metrics reset by admin")
-    return {"ok": True, "message": "All metrics reset"}
+    return {"code": 0, "message": "All metrics reset"}
