@@ -1,8 +1,11 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from dotenv import load_dotenv
+
+from infra.telemetry.config import OtlpConfig
 
 # Load .env from the server directory
 _env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -71,9 +74,8 @@ class AppConfig:
     server: ServerConfig
     queue: QueueConfig
     storage: StorageConfig
+    otlp: OtlpConfig
 
-
-from typing import Final
 
 _VALID_OSS_TYPES: Final[tuple[str, ...]] = ("s3", "ifly_gateway")
 
@@ -124,5 +126,13 @@ def load_config() -> AppConfig:
             bucket=os.getenv("OSS_BUCKET", "astron-claw-media"),
             region=os.getenv("OSS_REGION", "us-east-1"),
             ttl=int(os.getenv("OSS_TTL", "157788000")),
+        ),
+        otlp=OtlpConfig(
+            enabled=os.getenv("OTLP_ENABLED", "false").lower() == "true",
+            service_name=os.getenv("OTLP_SERVICE_NAME", "astron-claw"),
+            export_interval_ms=int(os.getenv("OTLP_EXPORT_INTERVAL_MS", "10000")),
+            metrics_enabled=True,
+            traces_enabled=False,
+            logs_enabled=False,
         ),
     )

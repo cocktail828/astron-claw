@@ -10,6 +10,8 @@ from infra.database import init_db, get_session_factory, close_db
 from infra.cache import init_redis, close_redis
 from infra.storage import create_storage
 from infra.migration import run_migrations
+from infra.telemetry import init_telemetry, shutdown_telemetry
+from infra.telemetry.metrics import ensure_instruments
 
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
@@ -19,7 +21,7 @@ from services.admin_auth import AdminAuth
 from services.media_manager import MediaManager
 import services.state as state
 
-from routers import health, tokens, admin_auth, admin, media, sse, websocket
+from routers import health, tokens, admin_auth, admin, media, sse, websocket, metrics
 
 
 @asynccontextmanager
@@ -32,6 +34,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize Redis
     redis = await init_redis(config.redis)
+
+    # Initialize OTLP telemetry (NoOp if disabled)
+    # Pass RedisConfig (not async client) — exporter creates its own sync client
+    await init_telemetry(config.otlp, config.redis)
+    ensure_instruments()
 
     # Auto-run pending database migrations (distributed-lock protected)
     await run_migrations(redis, config.mysql.url)
@@ -65,6 +72,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown — close connections + stop pub/sub before closing infrastructure
     await state.bridge.shutdown()
+    await shutdown_telemetry()
     await storage.close()
     await close_redis()
     await close_db()
@@ -75,6 +83,7 @@ app = FastAPI(title="Astron Claw Bridge Server", lifespan=lifespan)
 
 # ── Register routers ─────────────────────────────────────────────────────────
 app.include_router(health.router)
+app.include_router(metrics.router)
 app.include_router(tokens.router)
 app.include_router(admin_auth.router)
 app.include_router(admin.router)
