@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, BinaryIO, Union
 from urllib.parse import quote
 
 from aiobotocore.session import get_session, AioSession
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from infra.config import StorageConfig
@@ -47,6 +48,10 @@ class S3Storage(ObjectStorage):
             aws_access_key_id=self._config.access_key,
             aws_secret_access_key=self._config.secret_key,
             region_name=self._config.region,
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"payload_signing_enabled": False},
+            ),
         )
         self._client = await self._client_ctx.__aenter__()
         logger.info("S3 client initialised (endpoint={})", self._config.endpoint)
