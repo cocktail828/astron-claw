@@ -168,6 +168,8 @@ async def _stream_response(
             msg_id, raw = result
             await queue.ack(inbox, "sse", msg_id)
             await queue.delete_message(inbox, msg_id)
+            # Bot is actively sending — reset the idle deadline
+            deadline = time.time() + _SSE_TIMEOUT
 
             try:
                 event = json.loads(raw)
