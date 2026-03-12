@@ -32,10 +32,11 @@ async def ws_bot(
     try:
         while True:
             raw = await ws.receive_text()
+            state.bridge.mark_bot_seen(bot_token)
             await state.bridge.handle_bot_message(bot_token, raw)
     except WebSocketDisconnect:
         logger.info("Bot disconnected: {}...", bot_token[:10])
     except Exception:
         logger.exception("Bot connection error: {}...", bot_token[:10])
     finally:
-        await state.bridge.unregister_bot(bot_token)
+        await state.bridge.unregister_bot(bot_token, ws)
