@@ -162,8 +162,11 @@ class TestHandleBotMessage:
         await bridge.handle_bot_message("tok-1", "not json{{{")
 
     async def test_handle_bot_message_ping(self, bridge):
-        # Ping messages should be silently ignored
+        # Ping messages should reply with pong to keep reverse-proxy alive
+        mock_ws = AsyncMock()
+        bridge._bots["tok-1"] = mock_ws
         await bridge.handle_bot_message("tok-1", json.dumps({"type": "ping"}))
+        mock_ws.send_text.assert_awaited_once_with("pong")
 
     async def test_routes_chunk_to_session_from_params(self, bridge, mock_redis, mock_queue):
         """Streaming notifications with sessionId in params are routed to that session's inbox."""

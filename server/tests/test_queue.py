@@ -1,7 +1,7 @@
 """Tests for services/queue.py — RedisStreamQueue (mock Redis)."""
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.queue import RedisStreamQueue, create_queue
 
@@ -60,12 +60,15 @@ class TestConsume:
         redis.xreadgroup.side_effect = ResponseError(
             "NOGROUP No such key 'my:stream' or consumer group 'grp'"
         )
-        redis.xgroup_create = AsyncMock()
+        redis.exists.return_value = 0
 
         result = await queue.consume("my:stream", "grp", "c1")
         assert result is None
+        redis.exists.assert_awaited_once_with("my:stream")
+        redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
+        redis.xdel.assert_awaited_once_with("my:stream", redis.xadd.return_value)
         redis.xgroup_create.assert_awaited_once_with(
-            "my:stream", "grp", id="$", mkstream=True,
+            "my:stream", "grp", id="$",
         )
 
     async def test_reraises_non_nogroup_error(self, queue, redis):
@@ -93,11 +96,51 @@ class TestPurge:
 
 
 class TestEnsureGroup:
-    async def test_creates_group(self, queue, redis):
-        redis.xgroup_create = AsyncMock()
+    async def test_creates_group_standalone(self, queue, redis):
+        """Standalone Redis uses xgroup_create directly."""
+        redis.exists.return_value = 0
         await queue.ensure_group("my:stream", "grp")
+        redis.exists.assert_awaited_once_with("my:stream")
+        redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
+        redis.xdel.assert_awaited_once_with("my:stream", redis.xadd.return_value)
         redis.xgroup_create.assert_awaited_once_with(
-            "my:stream", "grp", id="$", mkstream=True,
+            "my:stream", "grp", id="$",
+        )
+
+    async def test_creates_group_cluster(self):
+        """RedisCluster uses execute_command with target_nodes."""
+        from redis.asyncio.cluster import RedisCluster
+        mock_redis = AsyncMock()
+        # Make isinstance(mock_redis, RedisCluster) return True
+        mock_redis.__class__ = RedisCluster
+        mock_redis.exists.return_value = 0
+        mock_node = MagicMock()
+        mock_redis.keyslot = MagicMock(return_value=42)
+        mock_redis.nodes_manager = MagicMock()
+        mock_redis.nodes_manager.get_node_from_slot.return_value = mock_node
+
+        queue = RedisStreamQueue(mock_redis)
+        await queue.ensure_group("my:stream", "grp")
+
+        mock_redis.exists.assert_awaited_once_with("my:stream")
+        mock_redis.xadd.assert_awaited_once_with("my:stream", {"_init": "1"})
+        mock_redis.xdel.assert_awaited_once_with("my:stream", mock_redis.xadd.return_value)
+        mock_redis.keyslot.assert_called_once_with("my:stream")
+        mock_redis.nodes_manager.get_node_from_slot.assert_called_once_with(42)
+        mock_redis.execute_command.assert_awaited_once_with(
+            "XGROUP", "CREATE", "my:stream", "grp", "$",
+            target_nodes=mock_node,
+        )
+
+    async def test_creates_group_stream_exists(self, queue, redis):
+        """When the stream already exists, skip xadd/xdel."""
+        redis.exists.return_value = 1
+        await queue.ensure_group("my:stream", "grp")
+        redis.exists.assert_awaited_once_with("my:stream")
+        redis.xadd.assert_not_awaited()
+        redis.xdel.assert_not_awaited()
+        redis.xgroup_create.assert_awaited_once_with(
+            "my:stream", "grp", id="$",
         )
 
     async def test_ignores_busygroup(self, queue, redis):

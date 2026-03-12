@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 
 from infra.log import logger
 
@@ -86,8 +87,8 @@ class RedisStreamQueue(MessageQueue):
     """``MessageQueue`` backed by Redis Streams.
 
     Each *queue_name* maps to a single Redis Stream key.  Consumer groups
-    are created lazily via :meth:`ensure_group` using ``MKSTREAM`` so the
-    underlying key is also auto-created if absent.
+    are created lazily via :meth:`ensure_group` which auto-creates the
+    underlying key if absent.
 
     Compatible with both Redis standalone and Redis Cluster (every
     operation touches a single key).
@@ -175,12 +176,31 @@ class RedisStreamQueue(MessageQueue):
 
     async def ensure_group(self, queue_name: str, group: str) -> None:
         try:
-            await self._redis.xgroup_create(
-                queue_name,
-                group,
-                id="$",
-                mkstream=True,
-            )
+            # Manually ensure the stream key exists before creating the
+            # consumer group.  This avoids passing ``mkstream=True`` which
+            # can cause encoding issues (bytes vs str) on RedisCluster
+            # with ``decode_responses=True``.
+            if not await self._redis.exists(queue_name):
+                entry_id = await self._redis.xadd(queue_name, {"_init": "1"})
+                await self._redis.xdel(queue_name, entry_id)
+
+            # RedisCluster._determine_slot cannot resolve the key
+            # position for XGROUP subcommands (neither the high-level
+            # xgroup_create() nor execute_command with split tokens work).
+            # Bypass slot detection entirely by computing the target node
+            # from the key ourselves.
+            if isinstance(self._redis, RedisCluster):
+                node = self._redis.nodes_manager.get_node_from_slot(
+                    self._redis.keyslot(queue_name),
+                )
+                await self._redis.execute_command(
+                    "XGROUP", "CREATE", queue_name, group, "$",
+                    target_nodes=node,
+                )
+            else:
+                await self._redis.xgroup_create(
+                    queue_name, group, id="$",
+                )
         except Exception as exc:
             # BUSYGROUP — group already exists, safe to ignore
             if "BUSYGROUP" in str(exc):

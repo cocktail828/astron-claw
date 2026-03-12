@@ -202,6 +202,7 @@ export class BridgeClient {
 
   _scheduleReconnect(): void {
     if (this.closing || this.authFailed) return;
+    if (this.reconnectTimer) return;            // already scheduled
     if (this.retry.maxAttempts > 0 && this.attempts >= this.retry.maxAttempts) {
       this.log.error?.("[bridge] retry limit reached, giving up");
       return;
@@ -210,7 +211,10 @@ export class BridgeClient {
     this.attempts += 1;
     this.backoffMs = Math.min(2 * this.backoffMs, this.retry.maxMs);
     this.log.info?.(`[bridge] reconnecting in ${delay}ms (attempt ${this.attempts})`);
-    this.reconnectTimer = setTimeout(() => this._connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this._connect();
+    }, delay);
     (this.reconnectTimer as any).unref?.();
   }
 }
