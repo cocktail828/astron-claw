@@ -16,10 +16,10 @@ export function getRawLogger(): any {
 }
 
 export const logger = {
-  info: (...args: any[]) => _logger.info?.("[AstronClaw]", ...args),
-  warn: (...args: any[]) => _logger.warn?.("[AstronClaw]", ...args),
-  error: (...args: any[]) => _logger.error?.("[AstronClaw]", ...args),
-  debug: (...args: any[]) => _logger.debug?.("[AstronClaw]", ...args),
+  info: (...args: any[]) => _logger.info?.(`[AstronClaw] ${args.join(" ")}`),
+  warn: (...args: any[]) => _logger.warn?.(`[AstronClaw] ${args.join(" ")}`),
+  error: (...args: any[]) => _logger.error?.(`[AstronClaw] ${args.join(" ")}`),
+  debug: (...args: any[]) => _logger.debug?.(`[AstronClaw] ${args.join(" ")}`),
 };
 
 // ---------------------------------------------------------------------------

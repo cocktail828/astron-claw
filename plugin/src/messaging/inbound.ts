@@ -191,10 +191,12 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   const routeBase = route?.sessionKey ?? PLUGIN_ID;
   const sessionKey = routeBase.endsWith(peerId) ? routeBase : `${routeBase}:${peerId}`;
 
-  // Build envelope body (same as DingTalk's formatInboundEnvelope)
+  // Load config once for all subsequent SDK calls
+  const cfg = rt.config?.loadConfig?.() ?? {};
+
+  // Build envelope body (same as DingTalk/adp-openclaw)
   let body = effectiveText;
   try {
-    const cfg = rt.config?.loadConfig?.() ?? {};
     const envelopeOpts = rt.channel?.reply?.resolveEnvelopeFormatOptions?.(cfg);
     const formatted = rt.channel?.reply?.formatInboundEnvelope?.({
       channel: "AstronClaw",
@@ -210,8 +212,16 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     // Use raw text as fallback
   }
 
-  // Build MsgContext (same structure as DingTalk's buildInboundContext)
-  const ctx: any = {
+  // Resolve messages config for responsePrefix (following adp-openclaw pattern)
+  let messagesConfig: any = {};
+  try {
+    messagesConfig = rt.channel?.reply?.resolveEffectiveMessagesConfig?.(cfg, route?.agentId) ?? {};
+  } catch {
+    // Fallback: no responsePrefix
+  }
+
+  // Build MsgContext and finalize through SDK (critical for BodyForAgent etc.)
+  const rawCtx: any = {
     Body: body,
     RawBody: effectiveText,
     CommandBody: effectiveText,
@@ -232,8 +242,6 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     OriginatingTo: toAddress,
     CommandAuthorized: true,
     // Media fields (supports multi-media via MediaPaths array)
-    // SDK convention: MediaUrl/MediaUrls are "pseudo-URLs" — local file paths
-    // identical to MediaPath/MediaPaths (see Discord, Telegram, Slack channels).
     MediaPath: mediaPaths[0] ?? undefined,
     MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
     MediaType: mediaTypes[0] ?? undefined,
@@ -241,10 +249,20 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
     MediaUrls: mediaPaths.length > 0 ? mediaPaths : undefined,
   };
 
+  // FIX: finalize through SDK — sets BodyForAgent, BodyForCommands, sanitizes
+  // system tags, normalizes media types. Without this, SDK dispatch may behave
+  // incorrectly (every other built-in channel calls this).
+  const ctx = rt.channel?.reply?.finalizeInboundContext
+    ? rt.channel.reply.finalizeInboundContext(rawCtx)
+    : rawCtx;
+
   // Token-level streaming state (following adp-openclaw pattern)
   let lastPartialText = "";
+  let allTurnsText = "";   // accumulated text across all turns for done event
   let chunkCount = 0;
   let finalSent = false;
+  let turnIndex = 0;       // track agent turns for logging
+  let turnTextLength = 0;  // cumulative text length within current turn
 
   // Helper: send a chunk to the bridge
   const sendChunk = (text: string): void => {
@@ -286,11 +304,14 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   // - onPartialReply handles real-time token-level streaming
   // - deliver ignores "block" (already sent via onPartialReply) and only handles "final"
   const dispatcherOptions = {
+    // FIX: pass responsePrefix from messagesConfig (same as adp-openclaw)
+    responsePrefix: messagesConfig.responsePrefix,
     deliver: async (payload: any, info: any) => {
       const kind = info?.kind;
       const text = payload?.text ?? "";
 
-      logger.debug(`deliver: kind=${kind}, text_len=${text.length}`);
+      // === DEBUG LOG: full deliver payload (no truncation) ===
+      logger.info(`[DIAG] deliver | turn=${turnIndex} kind=${kind} finalSent=${finalSent} chunkCount=${chunkCount} payload=${JSON.stringify(payload)} info=${JSON.stringify(info)}`);
 
       try {
         if (kind === "block") {
@@ -301,11 +322,17 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
           // Ignore — after_tool_call hook already sent tool results
           return;
         }
-        // "final" or undefined — send completion
+        // "final" or undefined — do NOT send done here.
+        // SDK calls deliver(final) after each turn, not just at the end of
+        // the entire dispatch.  Sending done prematurely closes the SSE
+        // stream and causes all subsequent tool_call / tool_result events
+        // from later turns to be silently dropped.
+        // Instead, record the latest text and let the post-dispatch safety
+        // net (after dispatchReplyWithBufferedBlockDispatcher resolves)
+        // send the single done event.
         if (kind === "final" || kind === undefined) {
-          const finalText = text || lastPartialText;
-          if (!isSilentReplyText(finalText, SILENT_REPLY_TOKEN)) {
-            sendFinal(finalText);
+          if (text) {
+            lastPartialText = text;
           }
         }
       } catch (sendErr) {
@@ -324,10 +351,8 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   // and send only the new portion as a chunk (same approach as adp-openclaw).
   activeSessionCtx.set(sessionKey, { bridgeClient, sessionId });
   try {
-    const cfg = rt.config?.loadConfig?.() ?? {};
-
     if (rt.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
-      const { queuedFinal } = await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
         cfg,
         dispatcherOptions,
@@ -336,6 +361,21 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
           onPartialReply: async (payload: any) => {
             const fullText = payload?.text ?? "";
             if (!fullText) return;
+
+            // === DEBUG LOG: full onPartialReply payload (no truncation) ===
+            if (fullText.length !== turnTextLength) {
+              logger.info(`[DIAG] onPartialReply | turn=${turnIndex} chunkCount=${chunkCount} fullText=${fullText}`);
+              turnTextLength = fullText.length;
+            }
+
+            // Detect turn reset (text got shorter = new agent turn)
+            if (fullText.length < lastPartialText.length) {
+              allTurnsText += lastPartialText;
+              turnIndex++;
+              turnTextLength = fullText.length;
+              logger.info(`[DIAG] === NEW TURN ${turnIndex} === prevText_len=${lastPartialText.length} newText_len=${fullText.length}`);
+              lastPartialText = "";
+            }
 
             // Filter silent reply tokens (same pattern as SDK built-in channels)
             if (isSilentReplyText(fullText, SILENT_REPLY_TOKEN)) return;
@@ -355,29 +395,31 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         },
       });
 
-      // Ensure final is sent even if SDK didn't call deliver with "final"
-      // (covers tool-only turns where chunkCount is 0)
-      if (!finalSent) {
-        if (!isSilentReplyText(lastPartialText, SILENT_REPLY_TOKEN)) {
-          sendFinal(lastPartialText);
+      // FIX: After dispatch completes, ensure final is sent even if SDK
+      // didn't call deliver with "final" (follows adp-openclaw pattern).
+      logger.info(`[DIAG] dispatch COMPLETED | turns=${turnIndex + 1} totalChunks=${chunkCount} lastPartialText_len=${lastPartialText.length} allTurnsText_len=${allTurnsText.length} finalSent=${finalSent}`);
+      if (!finalSent && (chunkCount > 0 || lastPartialText || allTurnsText)) {
+        const finalText = allTurnsText + lastPartialText;
+        logger.info(`dispatch completed without final deliver, sending final (chunks=${chunkCount})`);
+        if (!isSilentReplyText(finalText, SILENT_REPLY_TOKEN)) {
+          sendFinal(finalText);
         }
       }
 
-      if (queuedFinal) {
-        bridgeClient.send({
-          jsonrpc: "2.0",
-          id: requestId,
-          sessionId,
-          result: { stopReason: "end_turn" },
-        });
-      } else {
+      // FIX: Use finalSent/chunkCount as response signal instead of queuedFinal.
+      // In ACP dispatch flow, queuedFinal is architecturally false because agent
+      // text is delivered via block replies, not final replies. adp-openclaw also
+      // does not rely on queuedFinal.
+      const hasResponse = finalSent || chunkCount > 0;
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        id: requestId,
+        sessionId,
+        result: { stopReason: hasResponse ? "end_turn" : "no_reply" },
+      });
+
+      if (!hasResponse) {
         logger.warn("No response generated for inbound message");
-        bridgeClient.send({
-          jsonrpc: "2.0",
-          id: requestId,
-          sessionId,
-          result: { stopReason: "no_reply" },
-        });
       }
     } else {
       logger.warn("dispatchReplyWithBufferedBlockDispatcher not available on runtime");
