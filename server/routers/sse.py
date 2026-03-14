@@ -21,7 +21,7 @@ from services.bridge import CHAT_INBOX_PREFIX
 
 router = APIRouter()
 
-_SSE_TIMEOUT = 300  # 5 minutes
+_SSE_TIMEOUT = 600  # 10 minutes
 _SSE_BLOCK_MS = 1000  # XREADGROUP block timeout — short so we can send heartbeats
 _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 
