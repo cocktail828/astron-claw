@@ -25,7 +25,6 @@ _CLEANUP_LOCK_KEY = "bridge:cleanup_lock"      # distributed lock for stale clea
 
 _BOT_TTL = 30            # seconds before a bot is considered offline
 _HEARTBEAT_INTERVAL = 10 # how often each worker refreshes its heartbeat
-_BOT_SILENT_TTL = 45     # seconds: if no data received from bot WS, consider it dead
 _CONSUME_BLOCK_MS = 5000 # XREADGROUP block timeout (milliseconds)
 
 
@@ -56,8 +55,6 @@ class ConnectionBridge:
         self._worker_id = uuid.uuid4().hex[:12]
         # token -> bot WebSocket (process-local)
         self._bots: dict[str, WebSocket] = {}
-        # token -> last time we received any data from this bot WS
-        self._bot_last_seen: dict[str, float] = {}
         # Redis client for cross-worker state
         self._redis = redis
         # Session persistence layer (MySQL + Redis cache)
@@ -76,33 +73,20 @@ class ConnectionBridge:
         logger.info("Bridge worker {} started", self._worker_id)
 
     async def _run_heartbeat(self) -> None:
-        """Periodically refresh bot heartbeats and compete for cleanup duty."""
+        """Periodically refresh bot heartbeats and compete for cleanup duty.
+
+        Dead-connection detection is delegated to Uvicorn's protocol-level
+        ws_ping_interval / ws_ping_timeout (~20 s).  This loop only refreshes
+        the Redis ZSET scores for locally connected bots and runs the
+        distributed stale-entry cleanup.
+        """
         while not self._shutting_down:
             try:
                 now = time.time()
-                # Detect half-open WebSocket connections: if we haven't
-                # received any data from a bot within _BOT_SILENT_TTL,
-                # treat its connection as dead and forcibly unregister it.
-                stale_tokens = [
-                    (token, last_seen)
-                    for token, last_seen in self._bot_last_seen.items()
-                    if (now - last_seen) >= _BOT_SILENT_TTL
-                ]
-                for token, last_seen in stale_tokens:
-                    logger.warning(
-                        "Bot silent for {}s, force-closing (worker={}, token={}...)",
-                        int(now - last_seen),
-                        self._worker_id, token[:10],
-                    )
-                    ws = self._bots.get(token)
-                    if ws:
-                        try:
-                            await ws.close(code=4004, reason="Liveness timeout")
-                        except Exception:
-                            pass
-                    await self.unregister_bot(token)
 
-                # All workers: refresh heartbeat only for still-alive bots
+                # Refresh ZSET scores for locally connected bots.
+                # ws_ping_timeout guarantees every bot in _bots is protocol-
+                # level alive, so using ``now`` as the score is accurate.
                 if self._bots:
                     mapping = {token: now for token in self._bots}
                     await self._redis.zadd(_BOT_ALIVE_KEY, mapping)
@@ -152,6 +136,7 @@ class ConnectionBridge:
         between workers competing to register the same token.
         """
         if token in self._bots:
+            logger.info("[bridge] reject duplicate bot (local): {}...", token[:10])
             return False
 
         # Atomic: only succeeds if token is NOT already in the ZSET
@@ -162,12 +147,15 @@ class ConnectionBridge:
             # Another worker registered first, or stale heartbeat remains
             score = await self._redis.zscore(_BOT_ALIVE_KEY, token)
             if score is not None and (time.time() - score) < _BOT_TTL:
+                logger.info(
+                    "[bridge] reject duplicate bot (remote, age={:.1f}s): {}...",
+                    time.time() - score, token[:10],
+                )
                 return False
             # Stale heartbeat expired — overwrite only if our timestamp is newer
             await self._redis.zadd(_BOT_ALIVE_KEY, {token: time.time()}, gt=True)
 
         self._bots[token] = ws
-        self._bot_last_seen[token] = time.time()
         # Ensure consumer group exists and start consuming bot inbox
         inbox = f"{_BOT_INBOX_PREFIX}{token}"
         await self._queue.ensure_group(inbox, "bot")
@@ -189,7 +177,6 @@ class ConnectionBridge:
             # A newer connection already replaced this one; nothing to clean.
             return
         self._bots.pop(token, None)
-        self._bot_last_seen.pop(token, None)
         # Stop bot inbox consuming
         task_key = f"bot:{token}"
         task = self._poll_tasks.pop(task_key, None)
@@ -380,11 +367,6 @@ class ConnectionBridge:
     def notify_bot_disconnected(self, token: str) -> None:
         logger.info("Bot status -> disconnected (token={}...)", token[:10])
 
-    def mark_bot_seen(self, token: str) -> None:
-        """Update the last-seen timestamp for a locally connected bot."""
-        if token in self._bots:
-            self._bot_last_seen[token] = time.time()
-
     # ── Broadcasting ──────────────────────────────────────────────────────────
 
     async def _send_to_session(self, token: str, session_id: str, event: dict) -> None:
@@ -465,7 +447,6 @@ class ConnectionBridge:
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
             await self._cleanup_chat_inboxes(token)
         self._bots.clear()
-        self._bot_last_seen.clear()
 
         # Cancel all polling tasks
         for task in self._poll_tasks.values():

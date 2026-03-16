@@ -29,6 +29,8 @@ if __name__ == "__main__":
         loop="uvloop",
         http="httptools",
         ws="websockets",
+        ws_ping_interval=server.ws_ping_interval,
+        ws_ping_timeout=server.ws_ping_timeout,
         log_config=None,
         log_level=server.log_level,
         access_log=server.access_log,

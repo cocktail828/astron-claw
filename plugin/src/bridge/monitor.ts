@@ -33,6 +33,17 @@ export function monitorBridgeProvider(account: ResolvedAccount, abortSignal?: Ab
       },
     });
 
+    // Stop any previous client for this account to prevent duplicate connections.
+    // Detach callbacks first so its async close event won't overwrite runtime state.
+    const prev = activeBridgeClients.get(account.accountId);
+    if (prev) {
+      logger.warn(`Stopping previous bridge client for ${account.accountId} to avoid duplicate connection`);
+      prev.onClose = undefined;
+      prev.onReady = undefined;
+      prev.onMessage = undefined;
+      prev.stop();
+    }
+
     // Store reference for outbound use
     activeBridgeClients.set(account.accountId, bridgeClient);
 

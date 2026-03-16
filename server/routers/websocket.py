@@ -2,6 +2,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from infra.errors import Err
 from infra.log import logger
+from services.bridge import _BOT_TTL
 import services.state as state
 
 router = APIRouter()
@@ -22,7 +23,11 @@ async def ws_bot(
     await ws.accept()
 
     if not await state.bridge.register_bot(bot_token, ws):
-        await ws.send_json({"error": Err.WS_DUPLICATE_BOT.message})
+        await ws.send_json({
+            "error": Err.WS_DUPLICATE_BOT.message,
+            "code": Err.WS_DUPLICATE_BOT.status,
+            "retry_after": _BOT_TTL,
+        })
         await ws.close(code=Err.WS_DUPLICATE_BOT.status, reason=Err.WS_DUPLICATE_BOT.message)
         logger.warning("Bot connection rejected: duplicate token {}...", bot_token[:10])
         return
@@ -32,7 +37,6 @@ async def ws_bot(
     try:
         while True:
             raw = await ws.receive_text()
-            state.bridge.mark_bot_seen(bot_token)
             await state.bridge.handle_bot_message(bot_token, raw)
     except WebSocketDisconnect:
         logger.info("Bot disconnected: {}...", bot_token[:10])

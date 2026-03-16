@@ -46,6 +46,8 @@ class ServerConfig:
     workers: int
     log_level: str
     access_log: bool
+    ws_ping_interval: int = 10
+    ws_ping_timeout: int = 10
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,8 @@ def load_config() -> AppConfig:
             workers=int(os.getenv("SERVER_WORKERS", str((os.cpu_count() or 1) + 1))),
             log_level=os.getenv("SERVER_LOG_LEVEL", "info"),
             access_log=os.getenv("SERVER_ACCESS_LOG", "true").lower() == "true",
+            ws_ping_interval=int(os.getenv("WS_PING_INTERVAL", "10")),
+            ws_ping_timeout=int(os.getenv("WS_PING_TIMEOUT", "10")),
         ),
         queue=QueueConfig(
             type=os.getenv("QUEUE_TYPE", "redis_stream"),
