@@ -3,7 +3,7 @@ import json
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -61,27 +61,6 @@ class ChatRequest(BaseModel):
         if v is not None and len(v) > 10:
             raise ValueError("Too many media items (max 10)")
         return v
-
-
-# ---------------------------------------------------------------------------
-# Auth helper
-# ---------------------------------------------------------------------------
-
-async def _authenticate(authorization: Optional[str]) -> Optional[str]:
-    """Extract and validate token from Authorization: Bearer header.
-
-    Returns the validated token string, or None if invalid.
-    """
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return None
-
-    token = authorization[7:].strip()
-    if not token:
-        return None
-
-    if await state.token_manager.validate(token):
-        return token
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -265,17 +244,10 @@ async def _stream_with_cleanup(
 @router.post("/bridge/chat")
 async def chat_sse(
     body: ChatRequest,
-    authorization: Optional[str] = Header(default=None),
+    request: Request,
 ):
     t0 = time.time()
-
-    # Authenticate
-    token = await _authenticate(authorization)
-    if not token:
-        logger.warning("SSE: auth failed (token missing or invalid)")
-        _record_request("auth_fail", 401, "", t0)
-        return error_response(Err.AUTH_INVALID_TOKEN)
-
+    token: str = request.state.token
     tp = _token_prefix(token)
 
     # Validate message content — normalize media URLs
@@ -355,15 +327,9 @@ async def chat_sse(
 # ---------------------------------------------------------------------------
 
 @router.get("/bridge/chat/sessions")
-async def list_sessions(
-    authorization: Optional[str] = Header(default=None),
-):
-    validated = await _authenticate(authorization)
-    if not validated:
-        logger.warning("SSE: sessions auth failed (list)")
-        return error_response(Err.AUTH_INVALID_TOKEN)
-
-    sessions = await state.bridge.get_sessions(validated)
+async def list_sessions(request: Request):
+    token: str = request.state.token
+    sessions = await state.bridge.get_sessions(token)
 
     return {
         "code": 0,
@@ -376,16 +342,10 @@ async def list_sessions(
 # ---------------------------------------------------------------------------
 
 @router.post("/bridge/chat/sessions")
-async def create_session(
-    authorization: Optional[str] = Header(default=None),
-):
-    validated = await _authenticate(authorization)
-    if not validated:
-        logger.warning("SSE: sessions auth failed (create)")
-        return error_response(Err.AUTH_INVALID_TOKEN)
-
-    session_id, session_number = await state.bridge.create_session(validated)
-    sessions = await state.bridge.get_sessions(validated)
+async def create_session(request: Request):
+    token: str = request.state.token
+    session_id, session_number = await state.bridge.create_session(token)
+    sessions = await state.bridge.get_sessions(token)
 
     return {
         "code": 0,
