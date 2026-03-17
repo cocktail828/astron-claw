@@ -202,9 +202,24 @@ class RedisStreamQueue(MessageQueue):
                     queue_name, group, id="$",
                 )
         except Exception as exc:
-            # BUSYGROUP — group already exists, safe to ignore
+            # BUSYGROUP — group already exists.  Reset its last-delivered-id
+            # to "$" so the next XREADGROUP ">" only returns truly new
+            # messages (the caller has already purged stale entries).
             if "BUSYGROUP" in str(exc):
-                logger.debug("Queue ensure_group: stream={} group={} (already exists)", queue_name, group)
+                logger.debug("Queue ensure_group: stream={} group={} (already exists, resetting to $)", queue_name, group)
+                try:
+                    if isinstance(self._redis, RedisCluster):
+                        node = self._redis.nodes_manager.get_node_from_slot(
+                            self._redis.keyslot(queue_name),
+                        )
+                        await self._redis.execute_command(
+                            "XGROUP", "SETID", queue_name, group, "$",
+                            target_nodes=node,
+                        )
+                    else:
+                        await self._redis.xgroup_setid(queue_name, group, "$")
+                except Exception:
+                    logger.warning("Queue ensure_group: SETID failed stream={} group={}", queue_name, group)
                 return
             raise
 
