@@ -84,6 +84,8 @@ class TokenManager:
                 delete(Token).where(Token.token == token)
             )
             await session.commit()
+        from infra.token_auth import invalidate_token_cache
+        await invalidate_token_cache(token)
         logger.info("Token removed: {}...", token[:16])
 
     async def list_all(

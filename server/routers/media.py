@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Form, Header, UploadFile, File
+from fastapi import APIRouter, Form, Request, UploadFile, File
 
 from infra.errors import Err, error_response
 from infra.log import logger
@@ -8,29 +8,13 @@ import services.state as state
 router = APIRouter()
 
 
-async def _validate_token_header(authorization: str | None) -> str | None:
-    """Extract and validate token from Authorization header (Bearer scheme)."""
-    if not authorization:
-        return None
-    parts = authorization.split(" ", 1)
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        token = parts[1]
-    else:
-        token = authorization
-    if await state.token_manager.validate(token):
-        return token
-    return None
-
-
 @router.post("/api/media/upload")
 async def upload_media(
+    request: Request,
     file: UploadFile = File(...),
     sessionId: str | None = Form(default=None),
-    authorization: str | None = Header(default=None),
 ):
-    token = await _validate_token_header(authorization)
-    if not token:
-        return error_response(Err.AUTH_INVALID_TOKEN)
+    token: str = request.state.token
 
     # Determine file size via seek — avoids reading entire file into memory.
     # FastAPI's UploadFile wraps a SpooledTemporaryFile that spills to disk

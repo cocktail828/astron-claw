@@ -12,6 +12,7 @@ from infra.storage import create_storage
 from infra.migration import run_migrations
 from infra.telemetry import init_telemetry, shutdown_telemetry
 from infra.telemetry.metrics import ensure_instruments
+from infra.token_auth import TokenAuthMiddleware
 
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
@@ -100,6 +101,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Astron Claw Bridge Server", lifespan=lifespan)
+app.add_middleware(TokenAuthMiddleware)
 
 # ── Register routers ─────────────────────────────────────────────────────────
 app.include_router(health.router)

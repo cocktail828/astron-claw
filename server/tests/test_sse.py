@@ -5,7 +5,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from routers.sse import _authenticate, _resolve_session, _sse_event, _sse_comment, _stream_response, MediaItem
+from routers.sse import _resolve_session, _sse_event, _sse_comment, _stream_response, MediaItem
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+class _FakeState:
+    """Minimal stand-in for ``request.state`` with a ``token`` attribute."""
+    def __init__(self, token: str):
+        self.token = token
+
+
+class _FakeRequest:
+    """Minimal stand-in for ``fastapi.Request`` used by route handlers."""
+    def __init__(self, token: str = "sk-valid"):
+        self.state = _FakeState(token)
 
 
 # ── MediaItem validation ───────────────────────────────────────────────────
@@ -40,42 +54,6 @@ class TestSseEvent:
 
     def test_comment(self):
         assert _sse_comment() == ": heartbeat\n\n"
-
-
-# ── _authenticate ────────────────────────────────────────────────────────────
-
-
-class TestAuthenticate:
-    async def test_none_header(self):
-        assert await _authenticate(None) is None
-
-    async def test_empty_header(self):
-        assert await _authenticate("") is None
-
-    async def test_no_bearer_prefix(self):
-        assert await _authenticate("Basic abc") is None
-
-    async def test_bearer_empty_token(self):
-        assert await _authenticate("Bearer   ") is None
-
-    async def test_valid_token(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            result = await _authenticate("Bearer sk-abc123")
-            assert result == "sk-abc123"
-            mock_state.token_manager.validate.assert_awaited_once_with("sk-abc123")
-
-    async def test_invalid_token(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=False)
-            result = await _authenticate("Bearer sk-expired")
-            assert result is None
-
-    async def test_case_insensitive_bearer(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
-            result = await _authenticate("BEARER sk-abc123")
-            assert result == "sk-abc123"
 
 
 # ── _resolve_session ─────────────────────────────────────────────────────────
@@ -117,13 +95,12 @@ class TestResolveSession:
 def mock_state_valid_token():
     """Mock state with a valid token. Yields the mock_state object."""
     with patch("routers.sse.state") as mock_state:
-        mock_state.token_manager.validate = AsyncMock(return_value=True)
         yield mock_state
 
 
 @pytest.fixture
 def mock_state_full(mock_state_valid_token):
-    """Mock state with valid token, connected bot, existing session, and send_to_bot stub."""
+    """Mock state with connected bot, existing session, and send_to_bot stub."""
     ms = mock_state_valid_token
     ms.bridge.is_bot_connected = AsyncMock(return_value=True)
     ms.bridge.get_session = AsyncMock(return_value=("sid-1", 1))
@@ -134,28 +111,17 @@ def mock_state_full(mock_state_valid_token):
 
 
 class TestChatSseEndpoint:
-    """Test chat_sse route handler validation paths."""
+    """Test chat_sse route handler validation paths.
 
-    async def test_401_no_auth(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=False)
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello")
-            resp = await chat_sse(body, authorization=None)
-            assert resp.status_code == 401
-
-    async def test_401_invalid_token(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=False)
-            from routers.sse import chat_sse, ChatRequest
-            body = ChatRequest(content="hello")
-            resp = await chat_sse(body, authorization="Bearer sk-bad")
-            assert resp.status_code == 401
+    Auth (401) is now handled by TokenAuthMiddleware and tested in
+    test_token_auth.py.  These tests assume the middleware already
+    validated the token and set ``request.state.token``.
+    """
 
     async def test_400_empty_message(self, mock_state_valid_token):
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(content="")
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.status_code == 400
         assert "Empty message" in resp.body.decode()
 
@@ -165,7 +131,7 @@ class TestChatSseEndpoint:
             content="hello",
             media=[MediaItem(type="base64", content="abc", mimeType="image/png")],
         )
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.status_code == 400
         assert "Unsupported media type" in resp.body.decode()
 
@@ -175,7 +141,7 @@ class TestChatSseEndpoint:
             content="hello",
             media=[MediaItem(type="url", content="ftp://bad/file.jpg")],
         )
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.status_code == 400
         assert "Invalid media URL scheme" in resp.body.decode()
 
@@ -183,7 +149,7 @@ class TestChatSseEndpoint:
         mock_state_valid_token.bridge.is_bot_connected = AsyncMock(return_value=False)
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(content="hello")
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.status_code == 400
         assert "No bot connected" in resp.body.decode()
 
@@ -192,7 +158,7 @@ class TestChatSseEndpoint:
         mock_state_valid_token.bridge.get_session = AsyncMock(return_value=None)
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(content="hello", sessionId="nonexistent")
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.status_code == 404
         assert "Session not found" in resp.body.decode()
 
@@ -200,14 +166,14 @@ class TestChatSseEndpoint:
         mock_state_full.bridge.send_to_bot = AsyncMock(return_value=None)
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(content="hello", sessionId="sid-1")
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.status_code == 500
         assert "Failed to send" in resp.body.decode()
 
     async def test_200_returns_sse_stream(self, mock_state_full):
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(content="hello", sessionId="sid-1")
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.media_type == "text/event-stream"
         assert resp.headers["Cache-Control"] == "no-cache"
 
@@ -215,7 +181,7 @@ class TestChatSseEndpoint:
         """Stale events in inbox are purged and group is recreated before sending to bot."""
         from routers.sse import chat_sse, ChatRequest
         body = ChatRequest(content="hello", sessionId="sid-1")
-        await chat_sse(body, authorization="Bearer sk-valid")
+        await chat_sse(body, request=_FakeRequest())
         # Verify inbox was purged and group recreated
         inbox = "bridge:chat_inbox:sk-valid:sid-1"
         mock_state_full.queue.purge.assert_awaited_once_with(inbox)
@@ -227,7 +193,7 @@ class TestChatSseEndpoint:
         body = ChatRequest(
             media=[MediaItem(type="url", content="http://host:9000/file.mp3")],
         )
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.media_type == "text/event-stream"
         call_kwargs = mock_state_full.bridge.send_to_bot.call_args
         assert call_kwargs[1]["media_urls"] == ["http://host:9000/file.mp3"]
@@ -243,7 +209,7 @@ class TestChatSseEndpoint:
                 MediaItem(type="url", content="http://host:9000/b.png"),
             ],
         )
-        resp = await chat_sse(body, authorization="Bearer sk-valid")
+        resp = await chat_sse(body, request=_FakeRequest())
         assert resp.media_type == "text/event-stream"
         call_kwargs = mock_state_full.bridge.send_to_bot.call_args
         assert call_kwargs[1]["media_urls"] == [
@@ -253,21 +219,13 @@ class TestChatSseEndpoint:
 
 
 class TestListSessionsEndpoint:
-    async def test_401(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=False)
-            from routers.sse import list_sessions
-            resp = await list_sessions(authorization=None)
-            assert resp.status_code == 401
-
     async def test_200(self):
         with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.get_sessions = AsyncMock(
                 return_value=[("sid-1", 1), ("sid-2", 2)]
             )
             from routers.sse import list_sessions
-            resp = await list_sessions(authorization="Bearer sk-valid")
+            resp = await list_sessions(request=_FakeRequest())
             assert resp["code"] == 0
             assert len(resp["sessions"]) == 2
             assert "activeSessionId" not in resp
@@ -357,22 +315,14 @@ class TestStreamResponseChunkInjection:
 
 
 class TestCreateSessionEndpoint:
-    async def test_401(self):
-        with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=False)
-            from routers.sse import create_session
-            resp = await create_session(authorization=None)
-            assert resp.status_code == 401
-
     async def test_200(self):
         with patch("routers.sse.state") as mock_state:
-            mock_state.token_manager.validate = AsyncMock(return_value=True)
             mock_state.bridge.create_session = AsyncMock(return_value=("sid-new", 3))
             mock_state.bridge.get_sessions = AsyncMock(
                 return_value=[("sid-1", 1), ("sid-new", 3)]
             )
             from routers.sse import create_session
-            resp = await create_session(authorization="Bearer sk-valid")
+            resp = await create_session(request=_FakeRequest())
             assert resp["code"] == 0
             assert resp["sessionId"] == "sid-new"
             assert resp["sessionNumber"] == 3
