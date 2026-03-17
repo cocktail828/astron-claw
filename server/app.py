@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from infra.log import logger
@@ -83,10 +85,17 @@ async def lifespan(app: FastAPI):
     state.bridge = ConnectionBridge(redis, session_store=session_store, queue=queue)
     await state.bridge.start()
 
-    # Resolve frontend directory
-    _server_dir = Path(__file__).resolve().parent
-    _candidate = _server_dir.parent / "frontend"
-    state.frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
+    # Resolve frontend directory (only if SERVE_FRONTEND is enabled)
+    _serve_frontend = config.serve_frontend
+    if _serve_frontend:
+        _server_dir = Path(__file__).resolve().parent
+        _candidate = _server_dir.parent / "frontend"
+        state.frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
+    else:
+        state.frontend_dir = None
+
+    # Store CORS config for app setup
+    state.cors_config = config.cors
 
     logger.info("Astron Claw Bridge Server started")
     yield
@@ -101,6 +110,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Astron Claw Bridge Server", lifespan=lifespan)
+
+# ── CORS middleware ───────────────────────────────────────────────────────────
+# Always add CORS for frontend-backend separation; origins from CORS_ORIGINS env
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+if os.getenv("CORS_ENABLED", "true").lower() == "true":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 app.add_middleware(TokenAuthMiddleware)
 
 # ── Register routers ─────────────────────────────────────────────────────────
@@ -113,10 +135,10 @@ app.include_router(media.router)
 app.include_router(sse.router)
 app.include_router(websocket.router)
 
-# ── Static assets (CSS, JS, etc.) ────────────────────────────────────────────
+# ── Static assets — only when SERVE_FRONTEND=true ─────────────────────────────
 _server_dir = Path(__file__).resolve().parent
 _candidate = _server_dir.parent / "frontend"
 _frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
 
-if _frontend_dir.is_dir():
+if os.getenv("SERVE_FRONTEND", "true").lower() == "true" and _frontend_dir.is_dir():
     app.mount("/static", StaticFiles(directory=str(_frontend_dir)), name="static")

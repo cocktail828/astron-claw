@@ -22,6 +22,8 @@ PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 @router.get("/metrics", response_class=HTMLResponse)
 async def serve_metrics_dashboard():
     """Serve the metrics visualisation page."""
+    if state.frontend_dir is None:
+        return HTMLResponse(content="<h1>Metrics</h1><p>API server. Frontend served separately.</p>")
     html_file = state.frontend_dir / "metrics.html"
     if html_file.is_file():
         return HTMLResponse(content=html_file.read_text(encoding="utf-8"))

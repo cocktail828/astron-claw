@@ -20,9 +20,8 @@ FROM base
 
 COPY --from=deps /app/server/.venv /app/server/.venv
 
-# Copy application code
+# Copy application code (no frontend files)
 COPY server/ /app/server/
-COPY frontend/ /app/frontend/
 
 WORKDIR /app/server
 
