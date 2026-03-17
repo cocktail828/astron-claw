@@ -146,7 +146,9 @@ async def _stream_response(
 
             msg_id, raw = result
             await queue.ack(inbox, "sse", msg_id)
-            await queue.delete_message(inbox, msg_id)
+            # No per-message XDEL needed — stale entries are bulk-purged
+            # (XTRIM maxlen=0) at the start of the next chat_sse call,
+            # and XADD MAXLEN caps the stream as a safety net.
             # Bot is actively sending — reset the idle deadline
             deadline = time.time() + _SSE_TIMEOUT
 
@@ -230,11 +232,14 @@ async def _stream_with_cleanup(
             {"close_reason": close_reason, "token_prefix": tp},
         )
 
-        try:
-            inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
-            await state.queue.delete_queue(inbox)
-        except Exception:
-            logger.warning("SSE: cleanup failed (token={}...)", token[:10])
+        # NOTE: Do NOT delete_queue here.  A new SSE request for the same
+        # session may have already recreated the stream on another pod;
+        # deleting it would silently discard all bot messages (the
+        # _send_to_session exists() guard skips writes to a missing key).
+        # Stale messages are purged at the start of the next chat_sse call,
+        # and orphaned streams are cleaned up in _cleanup_chat_inboxes when
+        # the bot disconnects.
+        pass
 
 
 # ---------------------------------------------------------------------------
