@@ -167,7 +167,9 @@ async def _stream_response(
 
             msg_id, raw = result
             await queue.ack(inbox, "sse", msg_id)
-            await queue.delete_message(inbox, msg_id)
+            # No per-message XDEL needed — stale entries are bulk-purged
+            # (XTRIM maxlen=0) at the start of the next chat_sse call,
+            # and XADD MAXLEN caps the stream as a safety net.
             # Bot is actively sending — reset the idle deadline
             deadline = time.time() + _SSE_TIMEOUT
 

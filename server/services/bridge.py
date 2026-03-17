@@ -406,7 +406,6 @@ class ConnectionBridge:
                 msg_id, raw = result
                 data = json.loads(raw)
                 await self._queue.ack(inbox, "bot", msg_id)
-                await self._queue.delete_message(inbox, msg_id)
                 # Handle disconnect command from admin token delete
                 if data.get("_disconnect"):
                     bot_ws = self._bots.get(token)
