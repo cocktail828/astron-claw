@@ -12,6 +12,7 @@ export const useAdminStore = defineStore('admin', () => {
   const tokens = ref<Token[]>([])
   const totalTokens = ref(0)
   const onlineBots = ref(0)
+  const activeChats = ref(0)
   const totalCount = ref(0)
   const page = ref(1)
   const pageSize = ref(20)
@@ -62,6 +63,7 @@ export const useAdminStore = defineStore('admin', () => {
       totalCount.value = data.total
       onlineBots.value = data.online_bots
       totalTokens.value = data.total_tokens
+      activeChats.value = data.active_chats ?? 0
     } finally {
       loading.value = false
     }
@@ -96,6 +98,7 @@ export const useAdminStore = defineStore('admin', () => {
     tokens,
     totalTokens,
     onlineBots,
+    activeChats,
     totalCount,
     page,
     pageSize,

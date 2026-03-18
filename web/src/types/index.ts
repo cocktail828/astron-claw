@@ -5,6 +5,7 @@ export interface Token {
   created_at: string
   expires_at: string
   bot_online: boolean
+  chat_count?: number
 }
 
 // ── Chat ───────────────────────────────────────
@@ -67,6 +68,7 @@ export interface TokenListResponse {
   page_size: number
   online_bots: number
   total_tokens: number
+  active_chats?: number
 }
 
 export interface SessionListResponse {

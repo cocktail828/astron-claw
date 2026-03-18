@@ -132,10 +132,11 @@ export const useChatStore = defineStore('chat', () => {
         break
 
       case 'tool_call': {
+        const name = (data.name as string) || ''
         const tc: ToolCall = {
-          id: (data.id as string) || String(Date.now()),
-          name: (data.name as string) || '',
-          arguments: (data.arguments as string) || '',
+          id: (data.id as string) || `${name}-${Date.now()}`,
+          name,
+          arguments: (data.input as string) || (data.arguments as string) || '',
           status: 'running',
         }
         if (!msg.toolCalls) msg.toolCalls = []
@@ -144,11 +145,17 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       case 'tool_result': {
-        const id = data.id as string
-        const tc = msg.toolCalls?.find((t) => t.id === id)
+        // Server matches by name (FIFO) — find the first running tool call with this name
+        const name = (data.name as string) || ''
+        const id = data.id as string | undefined
+        const tc = id
+          ? msg.toolCalls?.find((t) => t.id === id)
+          : msg.toolCalls?.find((t) => t.name === name && t.status === 'running')
         if (tc) {
           tc.result = (data.content as string) || ''
-          tc.status = (data.is_error as boolean) ? 'error' : 'completed'
+          tc.status = (data.status as string) === 'error' || (data.is_error as boolean)
+            ? 'error'
+            : 'completed'
         }
         break
       }
@@ -168,6 +175,14 @@ export const useChatStore = defineStore('chat', () => {
       case 'done':
         if (data.content && !msg.content) {
           msg.content = data.content as string
+        }
+        // Finalize any tool calls still in running state
+        if (msg.toolCalls) {
+          for (const tc of msg.toolCalls) {
+            if (tc.status === 'running') {
+              tc.status = 'completed'
+            }
+          }
         }
         break
     }

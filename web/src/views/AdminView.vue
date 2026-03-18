@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { NModal, NButton, NInput, NSelect, NDataTable, NPagination, NSpace, NTag, NPopconfirm, useMessage } from 'naive-ui'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { NModal, NButton, NInput, NSelect, NSpace, useMessage } from 'naive-ui'
 import { useAdminStore } from '@/stores/admin'
 import AppHeader from '@/components/common/AppHeader.vue'
 import type { Token } from '@/types'
@@ -31,9 +31,16 @@ const editName = ref('')
 const editExpiry = ref(-1)
 const editLoading = ref(false)
 
+// Delete confirm modal
+const showDeleteModal = ref(false)
+const deleteTarget = ref('')
+
 // Refresh timer
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 const REFRESH_INTERVAL = 5000
+
+// Search
+const searchInput = ref('')
 
 const expiryOptions = [
   { label: '1 Hour', value: 3600 },
@@ -49,12 +56,28 @@ const editExpiryOptions = [
   ...expiryOptions,
 ]
 
+const PAGE_SIZE_OPTIONS = [5, 10, 20]
+
 onMounted(async () => {
+  admin.pageSize = parseInt(localStorage.getItem('astron-page-size') || '10')
   await admin.checkAuth()
   if (admin.authenticated) startRefresh()
+  document.addEventListener('keydown', onEscKey)
 })
 
-onUnmounted(() => stopRefresh())
+onUnmounted(() => {
+  stopRefresh()
+  document.removeEventListener('keydown', onEscKey)
+})
+
+function onEscKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    if (showDeleteModal.value) showDeleteModal.value = false
+    else if (showEditModal.value) showEditModal.value = false
+    else if (showCreateModal.value) showCreateModal.value = false
+    else if (showResultModal.value) showResultModal.value = false
+  }
+}
 
 function startRefresh() {
   admin.fetchTokens()
@@ -125,9 +148,15 @@ async function handleEdit() {
   finally { editLoading.value = false }
 }
 
-async function handleDelete(token: string) {
+function openDelete(token: string) {
+  deleteTarget.value = token
+  showDeleteModal.value = true
+}
+
+async function confirmDelete() {
   try {
-    await admin.deleteToken(token)
+    await admin.deleteToken(deleteTarget.value)
+    showDeleteModal.value = false
     message.success('Token deleted')
   } catch (e) { message.error((e as Error).message) }
 }
@@ -139,72 +168,112 @@ async function handleCleanup() {
   } catch (e) { message.error((e as Error).message) }
 }
 
-function copyToken(token: string) {
+function copyToken(token: string, btn?: HTMLElement) {
   navigator.clipboard.writeText(token)
+  if (btn) {
+    const orig = btn.textContent
+    btn.textContent = '\u2713'
+    btn.classList.add('copied')
+    setTimeout(() => {
+      btn.textContent = orig
+      btn.classList.remove('copied')
+    }, 1200)
+  }
   message.success('Copied to clipboard')
 }
 
 function maskToken(t: string): string {
   if (t.length <= 12) return t
-  return t.slice(0, 6) + '...' + t.slice(-4)
+  return t.slice(0, 7) + '...' + t.slice(-4)
 }
 
 function formatTime(ts: string): string {
-  return new Date(ts).toLocaleString()
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
 }
 
 function formatRelativeExpiry(ts: string): string {
   const diff = new Date(ts).getTime() - Date.now()
   if (diff < 0) return 'Expired'
   if (diff > 365 * 86400000) return 'Never'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h`
-  return `${Math.floor(diff / 86400000)}d`
+  if (diff < 60000) return `in ${Math.floor(diff / 1000)}s`
+  if (diff < 3600000) return `in ${Math.floor(diff / 60000)}m`
+  if (diff < 86400000) {
+    const h = Math.floor(diff / 3600000)
+    const m = Math.floor((diff % 3600000) / 60000)
+    return `in ${h}h ${m}m`
+  }
+  return `in ${Math.floor(diff / 86400000)}d`
 }
 
 // Search debounce
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 function handleSearch(val: string) {
+  searchInput.value = val
   admin.search = val
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(() => { admin.page = 1; admin.fetchTokens() }, 300)
 }
 
-// Table columns
-const columns = computed(() => [
-  { title: '#', key: 'index', width: 50, render: (_: Token, idx: number) => (admin.page - 1) * admin.pageSize + idx + 1 },
-  { title: 'Name', key: 'name', ellipsis: { tooltip: true } },
-  {
-    title: 'Token', key: 'token', width: 180,
-    render: (row: Token) => {
-      return h('span', {
-        style: 'font-family:var(--font-mono);font-size:12px;cursor:pointer',
-        onClick: () => copyToken(row.token),
-        title: 'Click to copy',
-      }, maskToken(row.token))
-    },
-  },
-  { title: 'Created', key: 'created_at', width: 170, render: (row: Token) => formatTime(row.created_at) },
-  { title: 'Expires', key: 'expires_at', width: 100, render: (row: Token) => formatRelativeExpiry(row.expires_at) },
-  {
-    title: 'Bot', key: 'bot_online', width: 80,
-    render: (row: Token) => h(NTag, { type: row.bot_online ? 'success' : 'default', size: 'small', bordered: false }, () => row.bot_online ? 'Online' : 'Offline'),
-  },
-  {
-    title: 'Actions', key: 'actions', width: 200,
-    render: (row: Token) => h(NSpace, { size: 'small' }, () => [
-      h('a', { href: `/?token=${encodeURIComponent(row.token)}`, style: 'font-size:12px;color:var(--accent)' }, 'Chat'),
-      h(NButton, { size: 'tiny', quaternary: true, onClick: () => openEdit(row) }, () => 'Edit'),
-      h(NPopconfirm, { onPositiveClick: () => handleDelete(row.token) }, {
-        trigger: () => h(NButton, { size: 'tiny', quaternary: true, type: 'error' }, () => 'Delete'),
-        default: () => 'Delete this token?',
-      }),
-    ]),
-  },
-])
+function clearSearch() {
+  searchInput.value = ''
+  admin.search = ''
+  admin.page = 1
+  admin.fetchTokens()
+}
 
-// Need h import for render functions
-import { h } from 'vue'
+// Sorting
+function toggleSort(field: string) {
+  if (admin.sortBy === field) {
+    admin.sortOrder = admin.sortOrder === 'desc' ? 'asc' : 'desc'
+  } else {
+    admin.sortBy = field
+    admin.sortOrder = 'desc'
+  }
+  admin.page = 1
+  admin.fetchTokens()
+}
+
+function toggleOnlineFilter() {
+  admin.botStatus = admin.botStatus === 'online' ? '' : 'online'
+  admin.page = 1
+  admin.fetchTokens()
+}
+
+// Pagination
+const totalPages = computed(() => Math.ceil(admin.totalCount / admin.pageSize))
+const offset = computed(() => (admin.page - 1) * admin.pageSize)
+const rangeStart = computed(() => offset.value + 1)
+const rangeEnd = computed(() => Math.min(offset.value + admin.pageSize, admin.totalCount))
+
+function goToPage(p: number) {
+  admin.page = p
+  admin.fetchTokens()
+}
+
+function changePageSize(size: number) {
+  admin.pageSize = size
+  localStorage.setItem('astron-page-size', String(size))
+  admin.page = 1
+  admin.fetchTokens()
+}
+
+function buildPageRange(current: number, total: number): (number | '...')[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const pages: (number | '...')[] = [1]
+  if (current > 3) pages.push('...')
+  for (let i = Math.max(2, current - 1); i <= Math.min(total - 1, current + 1); i++) {
+    pages.push(i)
+  }
+  if (current < total - 2) pages.push('...')
+  pages.push(total)
+  return pages
+}
+
+function onCopyBtnClick(e: MouseEvent, token: string) {
+  copyToken(token, e.target as HTMLElement)
+}
 </script>
 
 <template>
@@ -269,51 +338,149 @@ import { h } from 'vue'
         <div class="value success">{{ admin.onlineBots }}</div>
       </div>
       <div class="stat-card">
-        <div class="label">Showing</div>
-        <div class="value">{{ admin.totalCount }}</div>
+        <div class="label">Active Chats</div>
+        <div class="value warning">{{ admin.activeChats }}</div>
       </div>
     </div>
 
     <!-- Toolbar -->
     <div class="toolbar">
-      <NButton type="primary" @click="showCreateModal = true">+ New Token</NButton>
-      <NButton @click="handleCleanup">Cleanup Expired</NButton>
-      <NButton
-        :type="admin.botStatus === 'online' ? 'success' : 'default'"
-        @click="admin.botStatus = admin.botStatus === 'online' ? '' : 'online'; admin.page = 1; admin.fetchTokens()"
+      <button class="btn btn-primary" @click="showCreateModal = true">+ New Token</button>
+      <button class="btn btn-secondary" @click="handleCleanup">Cleanup Expired</button>
+      <button
+        class="btn btn-secondary"
+        :class="{ active: admin.botStatus === 'online' }"
+        @click="toggleOnlineFilter"
       >
-        {{ admin.botStatus === 'online' ? '&#10003; Online' : 'Online' }}
-      </NButton>
-      <div style="flex:1"></div>
-      <NInput
-        :value="admin.search"
-        placeholder="Search tokens..."
-        clearable
-        style="width: 220px"
-        @update:value="handleSearch"
-      />
+        &#9679; Online
+      </button>
+      <div class="search-bar">
+        <input
+          :value="searchInput"
+          type="text"
+          placeholder="Search tokens..."
+          @input="handleSearch(($event.target as HTMLInputElement).value)"
+        />
+        <button
+          class="search-clear"
+          :class="{ visible: searchInput.length > 0 }"
+          @click="clearSearch"
+        >&times;</button>
+      </div>
+      <div class="spacer"></div>
+      <span class="auto-refresh">Auto-refresh: 5s</span>
     </div>
 
     <!-- Table -->
-    <NDataTable
-      :columns="columns"
-      :data="admin.tokens"
-      :loading="admin.loading"
-      :bordered="false"
-      size="small"
-      :row-key="(row: Token) => row.token"
-    />
-
-    <div style="margin-top: 16px; display: flex; justify-content: flex-end">
-      <NPagination
-        v-model:page="admin.page"
-        :page-size="admin.pageSize"
-        :item-count="admin.totalCount"
-        :on-update:page="() => admin.fetchTokens()"
-        show-size-picker
-        :page-sizes="[10, 20, 50]"
-        :on-update:page-size="(s: number) => { admin.pageSize = s; admin.page = 1; admin.fetchTokens() }"
-      />
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Name</th>
+            <th>Token</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th
+              class="sortable"
+              :class="{ sorted: admin.sortBy === 'bot_online' }"
+              @click="toggleSort('bot_online')"
+            >
+              Bot
+              <span class="sort-arrow">{{ admin.sortBy === 'bot_online' && admin.sortOrder === 'asc' ? '\u25B2' : '\u25BC' }}</span>
+            </th>
+            <th
+              class="sortable"
+              :class="{ sorted: admin.sortBy === 'chat_count' }"
+              @click="toggleSort('chat_count')"
+            >
+              Chats
+              <span class="sort-arrow">{{ admin.sortBy === 'chat_count' && admin.sortOrder === 'asc' ? '\u25B2' : '\u25BC' }}</span>
+            </th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Skeleton loading -->
+          <template v-if="admin.loading && admin.tokens.length === 0">
+            <tr v-for="n in 4" :key="'skel-' + n" class="skeleton-row">
+              <td><span class="skeleton skel-sm"></span></td>
+              <td><span class="skeleton skel-md"></span></td>
+              <td><span class="skeleton skel-lg"></span></td>
+              <td><span class="skeleton skel-md"></span></td>
+              <td><span class="skeleton skel-md"></span></td>
+              <td><span class="skeleton skel-badge"></span></td>
+              <td><span class="skeleton skel-sm"></span></td>
+              <td><span class="skeleton skel-lg"></span></td>
+            </tr>
+          </template>
+          <!-- Empty state -->
+          <tr v-else-if="admin.tokens.length === 0">
+            <td colspan="8" class="empty-state">
+              {{ admin.search ? `No tokens matching "${admin.search}"` : 'No tokens yet. Click "+ New Token" to create one.' }}
+            </td>
+          </tr>
+          <!-- Data rows -->
+          <tr v-else v-for="(t, i) in admin.tokens" :key="t.token">
+            <td class="time-cell">{{ offset + i + 1 }}</td>
+            <td class="time-cell">
+              <template v-if="t.name">{{ t.name }}</template>
+              <span v-else style="color:var(--text-muted)">&mdash;</span>
+            </td>
+            <td>
+              <div class="token-cell">
+                <span class="masked">{{ maskToken(t.token) }}</span>
+                <button class="copy-btn" @click="onCopyBtnClick($event, t.token)">Copy</button>
+              </div>
+            </td>
+            <td class="time-cell">{{ formatTime(t.created_at) }}</td>
+            <td class="time-cell">{{ formatRelativeExpiry(t.expires_at) }}</td>
+            <td>
+              <span class="badge" :class="t.bot_online ? 'badge-online' : 'badge-offline'">
+                <span class="badge-dot"></span>
+                {{ t.bot_online ? 'Online' : 'Offline' }}
+              </span>
+            </td>
+            <td>{{ t.chat_count ?? 0 }}</td>
+            <td style="white-space:nowrap">
+              <a
+                class="chat-link"
+                :href="'/?token=' + encodeURIComponent(t.token)"
+                target="_blank"
+                title="Open chat"
+              >Chat &#8599;</a>
+              <button class="btn btn-secondary btn-sm" @click="openEdit(t)">Edit</button>
+              <button class="btn btn-danger btn-sm" @click="openDelete(t.token)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <!-- Pagination inside table card -->
+      <div v-if="admin.tokens.length > 0" class="pagination">
+        <span class="page-info">Per page</span>
+        <select
+          class="page-size-select"
+          :value="admin.pageSize"
+          @change="changePageSize(+($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="opt in PAGE_SIZE_OPTIONS" :key="opt" :value="opt">{{ opt }}</option>
+        </select>
+        <span class="page-info" style="margin: 0 4px">|</span>
+        <span class="page-info">{{ rangeStart }}&ndash;{{ rangeEnd }} of {{ admin.totalCount }}</span>
+        <template v-if="totalPages > 1">
+          <span class="page-info" style="margin: 0 4px">|</span>
+          <button :disabled="admin.page <= 1" @click="goToPage(admin.page - 1)">&laquo;</button>
+          <template v-for="p in buildPageRange(admin.page, totalPages)" :key="p">
+            <span v-if="p === '...'" class="page-info">...</span>
+            <button
+              v-else
+              :class="{ active: p === admin.page }"
+              @click="goToPage(p as number)"
+            >{{ p }}</button>
+          </template>
+          <button :disabled="admin.page >= totalPages" @click="goToPage(admin.page + 1)">&raquo;</button>
+        </template>
+      </div>
     </div>
 
     <!-- Create Token Modal -->
@@ -365,10 +532,22 @@ import { h } from 'vue'
         </NSpace>
       </template>
     </NModal>
+
+    <!-- Delete Confirm Modal -->
+    <NModal v-model:show="showDeleteModal" preset="card" title="Delete Token" style="max-width: 440px">
+      <p style="color:var(--text-secondary);font-size:14px;line-height:1.5">Are you sure? Connected clients will be disconnected.</p>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showDeleteModal = false">Cancel</NButton>
+          <NButton type="error" @click="confirmDelete">Delete</NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
 
 <style scoped>
+/* ===== Auth Screen ===== */
 .auth-screen {
   display: flex; align-items: center; justify-content: center;
   min-height: 100vh; padding: 20px;
@@ -379,7 +558,7 @@ import { h } from 'vue'
 }
 .auth-brand { text-align: center; margin-bottom: 32px; }
 .auth-logo { width: 64px; height: 64px; border-radius: 16px; margin-bottom: 16px; }
-.auth-brand h1 { font-size: 24px; font-weight: 700; }
+.auth-brand h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
 .auth-brand p { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
 .auth-error {
   color: var(--error); font-size: 13px; margin-bottom: 12px;
@@ -395,37 +574,187 @@ import { h } from 'vue'
 .form-group input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 .form-group input::placeholder { color: var(--text-muted); }
 .auth-btn {
-  width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   padding: 12px 24px; border: none; border-radius: var(--radius-sm);
   font-size: 14px; font-weight: 600; font-family: var(--font); cursor: pointer;
   background: var(--accent); color: #fff; transition: all var(--transition);
 }
-.auth-btn:hover:not(:disabled) { background: var(--accent-hover); }
-.auth-btn:disabled { opacity: .5; cursor: not-allowed; }
+.auth-btn:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
+.auth-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 
+/* ===== Page Layout ===== */
 .page { max-width: 1000px; margin: 0 auto; padding: 24px 20px; }
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+
+/* ===== Stats Cards ===== */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
 .stat-card {
   background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 20px; box-shadow: var(--shadow);
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
 .stat-card .label { font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
 .stat-card .value { font-size: 28px; font-weight: 700; }
 .stat-card .value.accent { color: var(--accent); }
 .stat-card .value.success { color: var(--success); }
+.stat-card .value.warning { color: var(--warning); }
 
-.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-
+/* ===== Icon Buttons ===== */
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; border-radius: var(--radius-sm); background: transparent;
   border: 1px solid var(--border); color: var(--text-secondary); cursor: pointer;
   font-size: 16px; transition: all var(--transition); text-decoration: none;
 }
-.icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-.logout-btn { width: auto; padding: 0 12px; font-size: 12px; font-family: var(--font); font-weight: 600; }
+.icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--text-muted); }
+.logout-btn { width: auto; padding: 0 12px; font-size: 12px; font-family: var(--font); font-weight: 600; color: var(--text-muted); }
 .logout-btn:hover { color: var(--error); border-color: var(--error); }
 
+/* ===== Toolbar ===== */
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.auto-refresh { font-size: 12px; color: var(--text-muted); }
+
+/* ===== Buttons ===== */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 18px; border: none; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 600; font-family: var(--font); cursor: pointer;
+  transition: all var(--transition);
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-secondary { background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-secondary:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.btn-secondary.active { color: var(--success); border-color: var(--success); background: rgba(34, 197, 94, 0.08); }
+.btn-secondary.active:hover { color: var(--success); background: rgba(34, 197, 94, 0.15); }
+.btn-danger { background: transparent; color: var(--error); border: 1px solid rgba(239, 68, 68, 0.3); }
+.btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+.btn-sm { padding: 6px 12px; font-size: 12px; margin: 0 4px; }
+
+/* ===== Search Bar ===== */
+.search-bar { position: relative; }
+.search-bar input {
+  width: 180px; padding: 10px 30px 10px 14px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-primary); font-size: 13px; font-family: var(--font); outline: none;
+  transition: width 0.25s ease, border-color var(--transition), box-shadow var(--transition);
+}
+.search-bar input:focus { width: 260px; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.search-bar input::placeholder { color: var(--text-muted); }
+.search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; border: none; border-radius: 50%;
+  background: var(--bg-tertiary); color: var(--text-muted); cursor: pointer;
+  display: none; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1; padding: 0;
+  transition: background var(--transition), color var(--transition);
+}
+.search-clear.visible { display: flex; }
+.search-clear:hover { background: var(--border); color: var(--text-primary); }
+
+/* ===== Table ===== */
+.table-card {
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  text-align: left; padding: 12px 16px; font-weight: 600;
+  color: var(--text-muted); font-size: 12px; text-transform: uppercase;
+  letter-spacing: 0.5px; background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+thead th.sortable { cursor: pointer; user-select: none; transition: color var(--transition); }
+thead th.sortable:hover { color: var(--text-secondary); }
+thead th .sort-arrow {
+  display: inline-block; margin-left: 3px; font-size: 10px;
+  opacity: 0.3; transition: opacity var(--transition);
+}
+thead th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+tbody td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr { transition: background var(--transition); }
+tbody tr:hover { background: var(--accent-dim); }
+
+.time-cell { color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+
+.token-cell {
+  font-family: var(--font-mono); font-size: 13px;
+  display: flex; align-items: center; gap: 6px;
+}
+.token-cell .masked { color: var(--text-secondary); }
+
+.copy-btn {
+  padding: 3px 8px; font-size: 11px; background: transparent;
+  border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-muted); cursor: pointer; font-family: var(--font);
+  transition: all var(--transition);
+}
+.copy-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.copy-btn.copied { color: var(--success); border-color: var(--success); }
+
+/* ===== Badges ===== */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600;
+}
+.badge-online { background: rgba(34, 197, 94, 0.12); color: var(--success); }
+.badge-offline { background: rgba(107, 113, 148, 0.12); color: var(--text-muted); }
+.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge-online .badge-dot { animation: dotPulse 2s ease-in-out infinite; }
+
+/* ===== Chat Link ===== */
+.chat-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border: 1px solid rgba(79, 143, 247, 0.3); border-radius: 4px;
+  background: transparent; color: var(--accent); font-size: 12px;
+  font-family: var(--font); font-weight: 600; cursor: pointer;
+  text-decoration: none; transition: all var(--transition); white-space: nowrap;
+}
+.chat-link:hover { background: var(--accent-dim); border-color: var(--accent); }
+
+/* ===== Skeleton Loading ===== */
+.skeleton { background: var(--bg-tertiary); border-radius: 4px; animation: skeleton 1.2s ease-in-out infinite; }
+.skeleton-row td { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.skel-sm { display: inline-block; width: 24px; height: 14px; }
+.skel-md { display: inline-block; width: 70px; height: 14px; }
+.skel-lg { display: inline-block; width: 120px; height: 14px; }
+.skel-badge { display: inline-block; width: 60px; height: 22px; border-radius: 12px; }
+
+.empty-state { text-align: center; padding: 48px 20px; color: var(--text-muted); font-size: 14px; }
+
+/* ===== Pagination ===== */
+.pagination {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 14px 16px; border-top: 1px solid var(--border);
+  background: var(--bg-tertiary); flex-wrap: wrap;
+}
+.pagination button {
+  min-width: 36px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-secondary); font-size: 13px;
+  font-family: var(--font); cursor: pointer; transition: all var(--transition);
+}
+.pagination button:hover:not(:disabled):not(.active) {
+  background: var(--bg-secondary); color: var(--text-primary); border-color: var(--text-muted);
+}
+.pagination button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pagination button:disabled { opacity: 0.35; cursor: not-allowed; }
+.pagination .page-info { font-size: 12px; color: var(--text-muted); padding: 0 8px; }
+.page-size-select {
+  height: 36px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text-primary); font-size: 13px;
+  font-family: var(--font); cursor: pointer; outline: none; transition: border-color var(--transition);
+}
+.page-size-select:hover { border-color: var(--text-muted); }
+.page-size-select:focus { border-color: var(--accent); }
+
+/* ===== Token Result ===== */
 .token-result {
   padding: 14px; background: var(--bg-tertiary); border: 1px solid var(--border);
   border-radius: var(--radius-sm); cursor: pointer; word-break: break-all;
@@ -433,7 +762,25 @@ import { h } from 'vue'
 }
 .token-result:hover { background: var(--accent-dim); }
 
+/* ===== Animations ===== */
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.4); }
+}
+@keyframes skeleton {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+/* ===== Mobile ===== */
 @media (max-width: 640px) {
   .stats { grid-template-columns: 1fr; }
+  .toolbar { flex-wrap: wrap; }
+  .search-bar { order: 10; width: 100%; }
+  .search-bar input { width: 100%; }
+  .search-bar input:focus { width: 100%; }
+  table { font-size: 12px; }
+  thead th, tbody td { padding: 10px 12px; }
+  .auth-card { padding: 28px 20px; }
 }
 </style>

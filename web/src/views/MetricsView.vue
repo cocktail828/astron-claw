@@ -131,6 +131,19 @@ function getTotalRequests(): { total: number; success: number; error: number } {
   return { total: success + error, success, error }
 }
 
+function getErrorBreakdown(): { client: number; server: number } {
+  const m = findMetric('request')
+  if (!m) return { client: 0, server: 0 }
+  let client = 0, server = 0
+  for (const s of m.series) {
+    if (s.subType) continue
+    const code = s.labels.code || s.labels.status_code || ''
+    if (code.startsWith('4')) client += s.value
+    else if (code.startsWith('5')) server += s.value
+  }
+  return { client, server }
+}
+
 function getAvgDuration(keyword: string): number {
   const m = findMetric(keyword)
   if (!m) return 0
@@ -243,6 +256,11 @@ function metricsByType(type: string): ParsedMetric[] {
         <div class="label">TOTAL REQUESTS</div>
         <div class="value accent">{{ formatNum(getTotalRequests().total) }}</div>
         <div class="sub" v-if="getTotalRequests().error">{{ formatNum(getTotalRequests().error) }} errors</div>
+      </div>
+      <div class="stat-card error-card">
+        <div class="label">ERROR REQUESTS</div>
+        <div class="value error-value">{{ formatNum(getTotalRequests().error) }}</div>
+        <div class="sub" v-if="getTotalRequests().error">{{ formatNum(getErrorBreakdown().client) }} 4xx, {{ formatNum(getErrorBreakdown().server) }} 5xx</div>
       </div>
       <div class="stat-card">
         <div class="label">ACTIVE STREAMS</div>
@@ -385,6 +403,9 @@ function metricsByType(type: string): ParsedMetric[] {
 .stat-card .sub { font-size: .75rem; color: var(--text-muted); margin-top: 4px; }
 .accent { color: var(--accent); }
 .success { color: var(--success); }
+.error-card { border-color: var(--error); }
+.error-card .label { color: var(--error); }
+.error-value { color: var(--error); }
 
 .raw-block {
   background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm);

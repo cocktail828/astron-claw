@@ -27,100 +27,201 @@ const display = computed(() => {
 })
 
 const statusClass = computed(() => `status-${props.tool.status}`)
-const truncatedResult = computed(() => {
+const statusText = computed(() => {
+  switch (props.tool.status) {
+    case 'running': return 'Running...'
+    case 'completed': return 'Completed'
+    case 'error': return 'Error'
+    default: return ''
+  }
+})
+
+const formattedArgs = computed(() => {
+  if (!props.tool.arguments) return ''
+  try {
+    const parsed = JSON.parse(props.tool.arguments)
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return props.tool.arguments
+  }
+})
+
+const formattedResult = computed(() => {
   if (!props.tool.result) return ''
-  return props.tool.result.length > 5000
+  let text = props.tool.result.length > 5000
     ? props.tool.result.slice(0, 5000) + '\n... (truncated)'
     : props.tool.result
+  try {
+    const parsed = JSON.parse(text)
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return text
+  }
 })
 </script>
 
 <template>
   <div class="tool-card" :class="[statusClass, { collapsed }]">
-    <div class="tool-header" @click="collapsed = !collapsed">
-      <span class="tool-stripe"></span>
-      <span class="tool-icon">{{ display.icon }}</span>
-      <span class="tool-name">{{ display.label }}</span>
-      <span v-if="tool.status === 'running'" class="tool-spinner"></span>
-      <span v-else-if="tool.status === 'completed'" class="tool-check">&#10003;</span>
-      <span v-else-if="tool.status === 'error'" class="tool-error-icon">&#10007;</span>
-      <span class="tool-toggle">{{ collapsed ? '&#9654;' : '&#9660;' }}</span>
-    </div>
-    <div v-show="!collapsed" class="tool-body">
-      <div v-if="tool.arguments" class="tool-section">
-        <div class="tool-section-label">Arguments</div>
-        <pre class="tool-pre">{{ tool.arguments }}</pre>
+    <div class="tool-card-header" @click="collapsed = !collapsed">
+      <div class="tool-card-icon">
+        <div v-if="tool.status === 'running'" class="tool-card-spinner"></div>
+        <span v-else-if="tool.status === 'completed'" class="status-icon">&#10003;</span>
+        <span v-else-if="tool.status === 'error'" class="status-icon">&#10007;</span>
       </div>
-      <div v-if="truncatedResult" class="tool-section">
-        <div class="tool-section-label">Result</div>
-        <pre class="tool-pre">{{ truncatedResult }}</pre>
+      <div class="tool-card-info">
+        <div class="tool-card-name">{{ display.icon }} {{ display.label }}</div>
+        <div class="tool-card-status">{{ statusText }}</div>
+      </div>
+      <span class="tool-card-chevron">&#9660;</span>
+    </div>
+    <div class="tool-card-body">
+      <div v-if="formattedArgs" class="tool-card-section">
+        <div class="tool-card-section-label">Input</div>
+        <div class="tool-card-section-content">{{ formattedArgs }}</div>
+      </div>
+      <div v-if="formattedResult" class="tool-card-section tool-output">
+        <div class="tool-card-section-label">Output</div>
+        <div class="tool-card-section-content">{{ formattedResult }}</div>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.tool-card {
-  border: 1px solid var(--tool-border);
-  border-radius: var(--radius-sm);
-  margin: 8px 0;
-  overflow: hidden;
-  background: var(--tool-bg);
-  border-left: 3px solid var(--tool-accent);
-  transition: border-color var(--transition);
+@keyframes toolSpin {
+  to { transform: rotate(360deg); }
 }
-.tool-card.status-completed { border-left-color: var(--success); }
-.tool-card.status-error { border-left-color: var(--error); }
-.tool-header {
+@keyframes toolPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.tool-card {
+  max-width: 85%;
+  border: 1px solid var(--tool-border);
+  border-left: 2px solid var(--tool-border);
+  background: var(--tool-bg);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  transition: border-color 0.3s ease;
+}
+.tool-card.status-running { border-left-color: var(--tool-stripe-running); }
+.tool-card.status-completed { border-left-color: var(--tool-stripe-completed); }
+.tool-card.status-error { border-left-color: var(--tool-stripe-error); }
+
+.tool-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 10px 14px;
   cursor: pointer;
-  font-size: 13px;
-  color: var(--text-secondary);
   user-select: none;
-  transition: background var(--transition);
+  transition: background 0.15s ease;
 }
-.tool-header:hover { background: var(--tool-running-dim); }
-.tool-icon { font-size: 14px; }
-.tool-name { flex: 1; font-weight: 600; color: var(--text-primary); }
-.tool-toggle { font-size: 10px; color: var(--text-muted); }
-.tool-spinner {
-  width: 14px; height: 14px;
+.tool-card-header:hover { background: var(--tool-running-dim); }
+
+.tool-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 15px;
+}
+.tool-card.status-running .tool-card-icon { background: var(--tool-accent-dim); }
+.tool-card.status-completed .tool-card-icon { background: var(--tool-success-dim); }
+.tool-card.status-error .tool-card-icon { background: var(--tool-error-dim); }
+
+.tool-card-spinner {
+  width: 16px;
+  height: 16px;
   border: 2px solid var(--tool-accent-dim);
   border-top-color: var(--tool-accent);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  animation: toolSpin 0.8s linear infinite;
 }
-.tool-check { color: var(--success); font-weight: 700; }
-.tool-error-icon { color: var(--error); font-weight: 700; }
-.tool-body {
-  border-top: 1px solid var(--tool-border);
-  padding: 12px 14px;
+
+.status-icon {
+  font-size: 14px;
+  font-weight: 700;
 }
-.tool-section { margin-bottom: 10px; }
-.tool-section:last-child { margin-bottom: 0; }
-.tool-section-label {
-  font-size: 11px;
+.tool-card.status-completed .status-icon { color: var(--success); }
+.tool-card.status-error .status-icon { color: var(--error); }
+
+.tool-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-card-name {
+  font-size: 13px;
   font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 6px;
+  color: var(--text-primary);
+  line-height: 1.3;
 }
-.tool-pre {
+
+.tool-card-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.tool-card.status-running .tool-card-status {
+  color: var(--tool-accent);
+  animation: toolPulse 1.5s ease-in-out infinite;
+}
+.tool-card.status-completed .tool-card-status { color: var(--success); }
+.tool-card.status-error .tool-card-status { color: var(--error); }
+
+.tool-card-chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.tool-card.collapsed .tool-card-chevron { transform: rotate(-90deg); }
+
+.tool-card-body {
+  max-height: 600px;
+  opacity: 1;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  border-top: 1px solid var(--tool-border);
+}
+.tool-card.collapsed .tool-card-body {
+  max-height: 0;
+  opacity: 0;
+  border-top-color: transparent;
+}
+
+.tool-card-section {
+  padding: 8px 14px 10px;
+}
+.tool-card-section + .tool-card-section {
+  border-top: 1px dashed var(--tool-border);
+}
+
+.tool-card-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.tool-card-section-content {
+  font-size: 13px;
   font-family: var(--font-mono);
-  font-size: 12px;
   color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
   line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
   max-height: 300px;
   overflow-y: auto;
-  background: var(--bg-tertiary);
-  padding: 10px;
-  border-radius: 6px;
 }
-.tool-stripe { display: none; }
+.tool-card.status-error .tool-card-section.tool-output .tool-card-section-content {
+  color: var(--error);
+}
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, watch, onUnmounted } from 'vue'
+import { ref, computed, onMounted, nextTick, watch, onUnmounted, provide } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import ThemeToggle from '@/components/common/ThemeToggle.vue'
@@ -18,7 +18,59 @@ const sidebarOpen = ref(false)
 const messagesContainer = ref<HTMLElement>()
 let statusTimer: ReturnType<typeof setInterval> | undefined
 
+// ── Drawer pin ──
+const DRAWER_PIN_KEY = 'astron-drawer-pinned'
+const drawerPinned = ref(localStorage.getItem(DRAWER_PIN_KEY) === 'true')
+const isMobile = ref(window.innerWidth <= 640)
+
+function onResize() {
+  isMobile.value = window.innerWidth <= 640
+}
+
+const effectivePinned = computed(() => drawerPinned.value && !isMobile.value)
+
+function handlePin(pinned: boolean) {
+  drawerPinned.value = pinned
+  localStorage.setItem(DRAWER_PIN_KEY, String(pinned))
+  if (pinned) sidebarOpen.value = true
+}
+
+// ── Lightbox ──
+const lightboxUrl = ref('')
+const lightboxOpen = ref(false)
+
+function openLightbox(url: string) {
+  lightboxUrl.value = url
+  lightboxOpen.value = true
+}
+
+function closeLightbox() {
+  lightboxOpen.value = false
+  lightboxUrl.value = ''
+}
+
+function onLightboxKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeLightbox()
+}
+
+provide('openLightbox', openLightbox)
+
+// ── Typing indicator ──
+const showTyping = computed(() => {
+  if (!chat.streaming) return false
+  const msgs = chat.currentMessages
+  if (!msgs.length) return false
+  const last = msgs[msgs.length - 1]
+  return last.role === 'assistant' && !last.content
+})
+
 onMounted(() => {
+  window.addEventListener('resize', onResize)
+  window.addEventListener('keydown', onLightboxKey)
+
+  // Restore pinned sidebar
+  if (effectivePinned.value) sidebarOpen.value = true
+
   const params = new URLSearchParams(location.search)
   const urlToken = params.get('token')
   if (urlToken) {
@@ -32,6 +84,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (statusTimer) clearInterval(statusTimer)
+  window.removeEventListener('resize', onResize)
+  window.removeEventListener('keydown', onLightboxKey)
 })
 
 async function handleConnect() {
@@ -108,8 +162,14 @@ watch(
   </div>
 
   <!-- Chat screen -->
-  <div v-else class="chat-screen">
-    <SessionSidebar v-if="sidebarOpen" @close="sidebarOpen = false" />
+  <div v-else class="chat-screen" :class="{ 'drawer-pinned': effectivePinned }">
+    <SessionSidebar
+      v-if="sidebarOpen"
+      :pinned="effectivePinned"
+      @close="sidebarOpen = false"
+      @pin="handlePin(true)"
+      @unpin="handlePin(false)"
+    />
 
     <div class="chat-header">
       <button class="icon-btn" @click="sidebarOpen = !sidebarOpen" title="Sessions">&#9776;</button>
@@ -128,6 +188,11 @@ watch(
       </div>
     </div>
 
+    <!-- Bot status banner -->
+    <div class="bot-banner" :class="auth.botConnected ? 'bot-banner-ok' : 'bot-banner-err'">
+      {{ auth.botConnected ? 'Bot connected' : 'Bot disconnected \u2014 waiting for bot to connect' }}
+    </div>
+
     <div ref="messagesContainer" class="messages-container">
       <div class="messages-list">
         <template v-if="chat.currentMessages.length">
@@ -138,10 +203,25 @@ watch(
           <div class="empty-title">Start a conversation</div>
           <div class="empty-desc">Send a message to begin chatting with the bot</div>
         </div>
+
+        <!-- Typing indicator -->
+        <div v-if="showTyping" class="typing-indicator">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </div>
       </div>
     </div>
 
     <ChatInput @send="handleSend" />
+
+    <!-- Lightbox -->
+    <Teleport to="body">
+      <div v-if="lightboxOpen" class="lightbox-overlay" @click="closeLightbox">
+        <button class="lightbox-close" @click.stop="closeLightbox">&times;</button>
+        <img :src="lightboxUrl" class="lightbox-img" @click.stop />
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -184,7 +264,8 @@ watch(
   border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite;
 }
 
-.chat-screen { display: flex; flex-direction: column; height: 100vh; }
+.chat-screen { display: flex; flex-direction: column; height: 100vh; transition: margin-left 0.2s ease; }
+.chat-screen.drawer-pinned { margin-left: 260px; }
 .chat-header {
   display: flex; align-items: center; gap: 10px; padding: 12px 16px;
   border-bottom: 1px solid var(--border); background: var(--bg-secondary); flex-shrink: 0;
@@ -209,11 +290,65 @@ watch(
 .icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 .disconnect-btn:hover { color: var(--error); border-color: var(--error); }
 
-.messages-container { flex: 1; overflow-y: auto; padding: 20px; }
-.messages-list { max-width: 800px; margin: 0 auto; }
+/* Bot status banner */
+.bot-banner {
+  padding: 8px 20px; font-size: 13px; text-align: center; flex-shrink: 0;
+  border-bottom: 1px solid var(--border); transition: all 0.3s ease;
+}
+.bot-banner-ok { background: var(--accent-dim); color: var(--accent); }
+.bot-banner-err { background: rgba(239,68,68,.1); color: var(--error); }
+
+.messages-container { flex: 1; overflow-y: auto; padding: 20px; scroll-behavior: smooth; }
+.messages-list {
+  max-width: 800px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 16px;
+}
 
 .empty-chat { text-align: center; padding: 80px 20px; color: var(--text-muted); }
 .empty-icon { font-size: 3rem; margin-bottom: 12px; opacity: .4; }
 .empty-title { font-size: 1.1rem; margin-bottom: 6px; color: var(--text-secondary); }
 .empty-desc { font-size: .85rem; }
+
+/* Typing indicator */
+.typing-indicator {
+  display: flex; gap: 4px; padding: 4px 0;
+}
+.typing-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted);
+  animation: bounce 1.2s infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* Lightbox */
+.lightbox-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex; align-items: center; justify-content: center;
+  cursor: zoom-out;
+  animation: fadeIn 0.2s ease;
+}
+.lightbox-close {
+  position: absolute; top: 20px; right: 20px;
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.1); color: #fff;
+  border: none; border-radius: 50%;
+  font-size: 20px; cursor: pointer;
+  transition: background 0.2s ease;
+}
+.lightbox-close:hover { background: rgba(255, 255, 255, 0.2); }
+.lightbox-img {
+  max-width: 90vw; max-height: 90vh; object-fit: contain;
+  border-radius: 8px; cursor: default;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (max-width: 640px) {
+  .chat-screen.drawer-pinned { margin-left: 0; }
+}
 </style>
