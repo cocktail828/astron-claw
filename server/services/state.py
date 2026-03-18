@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
 from services.queue import MessageQueue
@@ -11,4 +9,3 @@ bridge: ConnectionBridge
 queue: MessageQueue
 admin_auth: AdminAuth
 media_manager: MediaManager
-frontend_dir: Path

@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
 import os
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from infra.log import logger
 from infra.config import load_config
@@ -85,15 +83,6 @@ async def lifespan(app: FastAPI):
     state.bridge = ConnectionBridge(redis, session_store=session_store, queue=queue)
     await state.bridge.start()
 
-    # Resolve frontend directory (only if SERVE_FRONTEND is enabled)
-    _serve_frontend = config.serve_frontend
-    if _serve_frontend:
-        _server_dir = Path(__file__).resolve().parent
-        _candidate = _server_dir.parent / "frontend"
-        state.frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
-    else:
-        state.frontend_dir = None
-
     # Store CORS config for app setup
     state.cors_config = config.cors
 
@@ -134,11 +123,3 @@ app.include_router(admin.router)
 app.include_router(media.router)
 app.include_router(sse.router)
 app.include_router(websocket.router)
-
-# ── Static assets — only when SERVE_FRONTEND=true ─────────────────────────────
-_server_dir = Path(__file__).resolve().parent
-_candidate = _server_dir.parent / "frontend"
-_frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
-
-if os.getenv("SERVE_FRONTEND", "true").lower() == "true" and _frontend_dir.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_frontend_dir)), name="static")

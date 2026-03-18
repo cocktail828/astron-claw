@@ -16,7 +16,7 @@ dev-web:
 
 # ── Backend dev server ──────────────────────────────────────────────────────
 dev-server:
-	cd server && SERVE_FRONTEND=false .venv/bin/python run.py
+	cd server && .venv/bin/python run.py
 
 # ── Build frontend for production ───────────────────────────────────────────
 build-web:
