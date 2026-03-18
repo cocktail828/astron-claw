@@ -70,6 +70,11 @@ class StorageConfig:
 
 
 @dataclass(frozen=True)
+class CorsConfig:
+    origins: list[str]
+    enabled: bool
+
+@dataclass(frozen=True)
 class AppConfig:
     mysql: MysqlConfig
     redis: RedisConfig
@@ -77,6 +82,7 @@ class AppConfig:
     queue: QueueConfig
     storage: StorageConfig
     otlp: OtlpConfig
+    cors: CorsConfig
 
 
 _VALID_OSS_TYPES: Final[tuple[str, ...]] = ("s3", "ifly_gateway")
@@ -140,6 +146,10 @@ def load_config() -> AppConfig:
             metrics_enabled=True,
             traces_enabled=False,
             logs_enabled=False,
+        ),
+        cors=CorsConfig(
+            origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()],
+            enabled=os.getenv("CORS_ENABLED", "true").lower() == "true",
         ),
     )
     logger.info(

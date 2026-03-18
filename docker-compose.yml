@@ -1,0 +1,36 @@
+# ── Astron Claw — Application Services ───────────────────────────────────────
+# Only application containers. Middleware (MySQL, Redis, MinIO) is external.
+# Usage: docker compose up -d
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: astron-claw-backend
+    restart: unless-stopped
+    env_file: server/.env
+    environment:
+      SERVE_FRONTEND: "false"
+    ports:
+      - "8765:8765"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: astron-claw-frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: "http://backend:8765"
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
