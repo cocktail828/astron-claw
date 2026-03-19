@@ -4,7 +4,6 @@ import (
 	"context"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -13,13 +12,6 @@ import (
 	"github.com/hygao1024/astron-claw/backend/internal/model"
 	"github.com/hygao1024/astron-claw/backend/internal/pkg"
 )
-
-func maskToken(token string) string {
-	if len(token) <= 8 {
-		return token
-	}
-	return token[:8] + strings.Repeat("*", 4)
-}
 
 func (app *App) listTokens(c *gin.Context) {
 	ctx := c.Request.Context()
@@ -73,7 +65,7 @@ func (app *App) listTokens(c *gin.Context) {
 	pageItems := make([]tokenInfo, len(data.Items))
 	for i, t := range data.Items {
 		pageItems[i] = tokenInfo{
-			Token:     maskToken(t.Token),
+			Token:     t.Token,
 			Name:      t.Name,
 			CreatedAt: t.CreatedAt,
 			ExpiresAt: t.ExpiresAt,
@@ -133,7 +125,7 @@ func (app *App) listTokensWithBotSort(c *gin.Context, ctx context.Context, page,
 	allTokens := make([]tokenInfo, len(data.Items))
 	for i, t := range data.Items {
 		allTokens[i] = tokenInfo{
-			Token:     maskToken(t.Token),
+			Token:     t.Token,
 			Name:      t.Name,
 			CreatedAt: t.CreatedAt,
 			ExpiresAt: t.ExpiresAt,
