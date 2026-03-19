@@ -2,7 +2,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from infra.errors import Err
 from infra.log import logger
-from services.bridge import _BOT_TTL
 import services.state as state
 
 router = APIRouter()
@@ -22,24 +21,19 @@ async def ws_bot(
 
     await ws.accept()
 
-    if not await state.bridge.register_bot(bot_token, ws):
-        await ws.send_json({
-            "error": Err.WS_DUPLICATE_BOT.message,
-            "code": Err.WS_DUPLICATE_BOT.status,
-            "retry_after": _BOT_TTL,
-        })
-        await ws.close(code=Err.WS_DUPLICATE_BOT.status, reason=Err.WS_DUPLICATE_BOT.message)
-        logger.warning("Bot connection rejected: duplicate token {}...", bot_token[:10])
-        return
+    client = ws.client
+    client_addr = f"{client.host}:{client.port}" if client else "unknown"
 
-    logger.info("Bot connected: {}...", bot_token[:10])
+    await state.bridge.register_bot(bot_token, ws)
+
+    logger.info("Bot connected: {}... from={}", bot_token[:10], client_addr)
     state.bridge.notify_bot_connected(bot_token)
     try:
         while True:
             raw = await ws.receive_text()
             await state.bridge.handle_bot_message(bot_token, raw)
-    except WebSocketDisconnect:
-        logger.info("Bot disconnected: {}...", bot_token[:10])
+    except WebSocketDisconnect as exc:
+        logger.info("Bot disconnected: {}... from={} code={} reason={}", bot_token[:10], client_addr, exc.code, exc.reason)
     except Exception:
         logger.exception("Bot connection error: {}...", bot_token[:10])
     finally:

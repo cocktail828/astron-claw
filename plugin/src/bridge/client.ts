@@ -133,6 +133,8 @@ export class BridgeClient {
       this.onClose?.();
       if (code === 4001) {
         this._markAuthFailed("4001");
+      } else if (code === 4005) {
+        this.log.info?.("[bridge] evicted by newer connection, will not retry");
       } else {
         this._scheduleReconnect();
       }

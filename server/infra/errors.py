@@ -65,7 +65,9 @@ class Err(Enum):
 
     # ── WebSocket ─────────────────────────────────────────
     WS_INVALID_TOKEN        = (4001, "Invalid or missing bot token")
-    WS_DUPLICATE_BOT        = (4002, "Bot already connected")
+    WS_TOKEN_DELETED        = (4003, "Token deleted")
+    WS_SERVER_RESTART       = (4000, "Server restarting")
+    WS_EVICTED              = (4005, "Evicted by newer connection")
 
     # ── Bot (internal) ────────────────────────────────────
     BOT_UNKNOWN_ERROR       = (None, "Unknown error from bot")

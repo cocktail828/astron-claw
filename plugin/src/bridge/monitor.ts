@@ -33,14 +33,13 @@ export function monitorBridgeProvider(account: ResolvedAccount, abortSignal?: Ab
       },
     });
 
-    // Stop any previous client for this account to prevent duplicate connections.
-    // Detach callbacks first so its async close event won't overwrite runtime state.
+    // Stop any orphaned client from a previous startAccount call to prevent
+    // two BridgeClients with the same token causing a 4005 eviction ping-pong.
+    // Clear onClose first to avoid the stale callback marking running=false
+    // during the brief window before the new client connects.
     const prev = activeBridgeClients.get(account.accountId);
     if (prev) {
-      logger.warn(`Stopping previous bridge client for ${account.accountId} to avoid duplicate connection`);
       prev.onClose = undefined;
-      prev.onReady = undefined;
-      prev.onMessage = undefined;
       prev.stop();
     }
 
@@ -62,11 +61,13 @@ export function monitorBridgeProvider(account: ResolvedAccount, abortSignal?: Ab
     if (abortSignal) {
       const onAbort = () => {
         bridgeClient.stop();
-        activeBridgeClients.delete(account.accountId);
-        recordChannelRuntimeState(account.accountId, {
-          running: false,
-          lastStopAt: Date.now(),
-        });
+        if (activeBridgeClients.get(account.accountId) === bridgeClient) {
+          activeBridgeClients.delete(account.accountId);
+          recordChannelRuntimeState(account.accountId, {
+            running: false,
+            lastStopAt: Date.now(),
+          });
+        }
         resolve();
       };
       if (abortSignal.aborted) {
