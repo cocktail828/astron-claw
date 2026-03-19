@@ -10,3 +10,4 @@ PLAN.md
 .venv/
 server/media/
 web/dist/
+probe/probe
