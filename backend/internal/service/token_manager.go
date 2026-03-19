@@ -1,0 +1,193 @@
+package service
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
+	"gorm.io/gorm"
+
+	"github.com/hygao1024/astron-claw/backend/internal/model"
+)
+
+// NeverExpires is the maximum MySQL DATETIME — used for tokens with no expiry.
+var NeverExpires = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+
+// TokenManager manages API tokens with MySQL storage.
+type TokenManager struct {
+	db  *gorm.DB
+	rdb redis.UniversalClient
+}
+
+// NewTokenManager creates a new TokenManager.
+func NewTokenManager(db *gorm.DB, rdb redis.UniversalClient) *TokenManager {
+	return &TokenManager{db: db, rdb: rdb}
+}
+
+// Generate creates a new token with the given name and expiry.
+func (m *TokenManager) Generate(ctx context.Context, name string, expiresIn int) (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate random: %w", err)
+	}
+	tokenValue := "sk-" + hex.EncodeToString(b)
+	now := time.Now().UTC()
+	expiresAt := NeverExpires
+	if expiresIn > 0 {
+		expiresAt = now.Add(time.Duration(expiresIn) * time.Second)
+	}
+
+	token := model.Token{
+		Token:     tokenValue,
+		CreatedAt: now,
+		Name:      name,
+		ExpiresAt: expiresAt,
+	}
+	if err := m.db.WithContext(ctx).Create(&token).Error; err != nil {
+		return "", fmt.Errorf("create token: %w", err)
+	}
+
+	log.Info().Str("token", tokenValue[:16]+"...").Str("name", name).Int("expires_in", expiresIn).Msg("Token generated")
+	return tokenValue, nil
+}
+
+// Validate checks if a token is valid and not expired.
+func (m *TokenManager) Validate(ctx context.Context, token string) bool {
+	if token == "" {
+		return false
+	}
+
+	var count int64
+	m.db.WithContext(ctx).Model(&model.Token{}).
+		Where("token = ? AND expires_at >= ?", token, time.Now().UTC()).
+		Count(&count)
+
+	if count > 0 {
+		log.Debug().Str("token", token[:10]+"...").Msg("Token validated")
+		return true
+	}
+	log.Debug().Str("token", token[:10]+"...").Msg("Token validation failed")
+	return false
+}
+
+// Update modifies a token's name and/or expiry.
+func (m *TokenManager) Update(ctx context.Context, tokenValue string, name *string, expiresIn *int) (bool, error) {
+	var token model.Token
+	if err := m.db.WithContext(ctx).Where("token = ?", tokenValue).First(&token).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Warn().Str("token", tokenValue[:16]+"...").Msg("Token update failed: not found")
+			return false, nil
+		}
+		return false, err
+	}
+
+	updates := map[string]interface{}{}
+	if name != nil {
+		updates["name"] = *name
+	}
+	if expiresIn != nil {
+		if *expiresIn == 0 {
+			updates["expires_at"] = NeverExpires
+		} else {
+			updates["expires_at"] = time.Now().UTC().Add(time.Duration(*expiresIn) * time.Second)
+		}
+	}
+
+	if len(updates) > 0 {
+		if err := m.db.WithContext(ctx).Model(&token).Updates(updates).Error; err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// Remove deletes a token and invalidates its auth cache.
+func (m *TokenManager) Remove(ctx context.Context, tokenValue string) error {
+	if err := m.db.WithContext(ctx).Where("token = ?", tokenValue).Delete(&model.Token{}).Error; err != nil {
+		return fmt.Errorf("delete token: %w", err)
+	}
+	// Invalidate token auth cache
+	m.rdb.Del(ctx, "token_auth:"+tokenValue)
+	log.Info().Str("token", tokenValue[:16]+"...").Msg("Token removed")
+	return nil
+}
+
+// ListAll returns a paginated list of non-expired tokens.
+func (m *TokenManager) ListAll(ctx context.Context, page, pageSize int, search string) (*TokenListResult, error) {
+	now := time.Now().UTC()
+	query := m.db.WithContext(ctx).Model(&model.Token{}).Where("expires_at >= ?", now)
+	if search != "" {
+		query = query.Where("token LIKE ?", "%"+search+"%")
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	var rows []model.Token
+	offset := (page - 1) * pageSize
+	if err := query.Order("created_at DESC").Limit(pageSize).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	items := make([]TokenItem, len(rows))
+	for i, row := range rows {
+		items[i] = TokenItem{
+			Token:     row.Token,
+			CreatedAt: toTimestamp(row.CreatedAt),
+			Name:      row.Name,
+			ExpiresAt: toTimestamp(row.ExpiresAt),
+		}
+	}
+
+	return &TokenListResult{
+		Items:    items,
+		Total:    int(total),
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}
+
+// CleanupExpired removes all expired tokens and returns the count.
+func (m *TokenManager) CleanupExpired(ctx context.Context) (int, error) {
+	result := m.db.WithContext(ctx).Where("expires_at < ?", time.Now().UTC()).Delete(&model.Token{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	count := int(result.RowsAffected)
+	if count > 0 {
+		log.Info().Int("count", count).Msg("Cleaned up expired tokens")
+	}
+	return count, nil
+}
+
+// TokenItem represents a token in list results.
+type TokenItem struct {
+	Token     string  `json:"token"`
+	CreatedAt float64 `json:"created_at"`
+	Name      string  `json:"name"`
+	ExpiresAt float64 `json:"expires_at"`
+}
+
+// TokenListResult represents paginated token list results.
+type TokenListResult struct {
+	Items    []TokenItem `json:"items"`
+	Total    int         `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+}
+
+func toTimestamp(t time.Time) float64 {
+	if t.IsZero() {
+		return 0
+	}
+	if t.Location() == nil || t.Location() == time.Local {
+		t = t.UTC()
+	}
+	return float64(t.Unix()) + float64(t.Nanosecond())/1e9
+}

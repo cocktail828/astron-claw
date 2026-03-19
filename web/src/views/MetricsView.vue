@@ -123,7 +123,7 @@ function getTotalRequests(): { total: number; success: number; error: number } {
   if (!m) return { total: 0, success: 0, error: 0 }
   let success = 0, error = 0
   for (const s of m.series) {
-    if (s.subType) continue
+    if (s.subType && s.subType !== 'total') continue
     const code = s.labels.code || s.labels.status_code || ''
     if (code.startsWith('2')) success += s.value
     else error += s.value
@@ -136,7 +136,7 @@ function getErrorBreakdown(): { client: number; server: number } {
   if (!m) return { client: 0, server: 0 }
   let client = 0, server = 0
   for (const s of m.series) {
-    if (s.subType) continue
+    if (s.subType && s.subType !== 'total') continue
     const code = s.labels.code || s.labels.status_code || ''
     if (code.startsWith('4')) client += s.value
     else if (code.startsWith('5')) server += s.value
@@ -300,7 +300,7 @@ function metricsByType(type: string): ParsedMetric[] {
           <table class="metric-table">
             <thead><tr><th>Labels</th><th>Value</th></tr></thead>
             <tbody>
-              <tr v-for="(s, i) in m.series.filter(s => !s.subType)" :key="i">
+              <tr v-for="(s, i) in m.series.filter(s => !s.subType || s.subType === 'total')" :key="i">
                 <td class="labels">
                   <template v-for="(v, k) in s.labels" :key="k">
                     <span v-if="k !== 'service'">

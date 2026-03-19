@@ -16,7 +16,7 @@ dev-web:
 
 # ── Backend dev server ──────────────────────────────────────────────────────
 dev-server:
-	cd server && .venv/bin/python run.py
+	cd backend && go run ./cmd/server
 
 # ── Build frontend for production ───────────────────────────────────────────
 build-web:

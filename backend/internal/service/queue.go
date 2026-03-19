@@ -1,0 +1,175 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
+)
+
+// MessageQueue is the backend-agnostic message queue interface.
+type MessageQueue interface {
+	Publish(ctx context.Context, queueName, message string) (string, error)
+	Consume(ctx context.Context, queueName, group, consumer string, blockMs int) (*QueueMessage, error)
+	Ack(ctx context.Context, queueName, group, messageID string) error
+	DeleteMessage(ctx context.Context, queueName, messageID string) error
+	DeleteQueue(ctx context.Context, queueName string) error
+	Purge(ctx context.Context, queueName string) error
+	EnsureGroup(ctx context.Context, queueName, group string) error
+}
+
+// QueueMessage represents a consumed message.
+type QueueMessage struct {
+	ID   string
+	Data string
+}
+
+// RedisStreamQueue implements MessageQueue backed by Redis Streams.
+type RedisStreamQueue struct {
+	rdb    redis.UniversalClient
+	maxLen int64
+}
+
+// NewRedisStreamQueue creates a new RedisStreamQueue.
+func NewRedisStreamQueue(rdb redis.UniversalClient, maxStreamLen int) *RedisStreamQueue {
+	return &RedisStreamQueue{
+		rdb:    rdb,
+		maxLen: int64(maxStreamLen),
+	}
+}
+
+func (q *RedisStreamQueue) Publish(ctx context.Context, queueName, message string) (string, error) {
+	entryID, err := q.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: queueName,
+		MaxLen: q.maxLen,
+		Approx: true,
+		Values: map[string]interface{}{"data": message},
+	}).Result()
+	if err != nil {
+		return "", fmt.Errorf("xadd: %w", err)
+	}
+	log.Debug().Str("stream", queueName).Str("msg_id", entryID).Msg("Queue publish")
+	return entryID, nil
+}
+
+func (q *RedisStreamQueue) Consume(ctx context.Context, queueName, group, consumer string, blockMs int) (*QueueMessage, error) {
+	result, err := q.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    group,
+		Consumer: consumer,
+		Streams:  []string{queueName, ">"},
+		Count:    1,
+		Block:    time.Duration(blockMs) * time.Millisecond,
+	}).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		// NOGROUP — group hasn't been created yet
+		errMsg := err.Error()
+		if contains(errMsg, "NOGROUP") {
+			log.Warn().Str("stream", queueName).Str("group", group).Msg("Queue NOGROUP, recreating")
+			_ = q.EnsureGroup(ctx, queueName, group)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("xreadgroup: %w", err)
+	}
+
+	if len(result) == 0 || len(result[0].Messages) == 0 {
+		return nil, nil
+	}
+
+	msg := result[0].Messages[0]
+	data, _ := msg.Values["data"].(string)
+	log.Debug().Str("stream", queueName).Str("group", group).Str("msg_id", msg.ID).Msg("Queue consume")
+	return &QueueMessage{ID: msg.ID, Data: data}, nil
+}
+
+func (q *RedisStreamQueue) Ack(ctx context.Context, queueName, group, messageID string) error {
+	_, err := q.rdb.XAck(ctx, queueName, group, messageID).Result()
+	if err != nil {
+		return fmt.Errorf("xack: %w", err)
+	}
+	log.Debug().Str("stream", queueName).Str("msg_id", messageID).Msg("Queue ack")
+	return nil
+}
+
+func (q *RedisStreamQueue) DeleteMessage(ctx context.Context, queueName, messageID string) error {
+	_, err := q.rdb.XDel(ctx, queueName, messageID).Result()
+	if err != nil {
+		return fmt.Errorf("xdel: %w", err)
+	}
+	log.Debug().Str("stream", queueName).Str("msg_id", messageID).Msg("Queue delete_message")
+	return nil
+}
+
+func (q *RedisStreamQueue) DeleteQueue(ctx context.Context, queueName string) error {
+	_, err := q.rdb.Del(ctx, queueName).Result()
+	if err != nil {
+		return fmt.Errorf("del: %w", err)
+	}
+	log.Debug().Str("stream", queueName).Msg("Queue delete_queue")
+	return nil
+}
+
+func (q *RedisStreamQueue) Purge(ctx context.Context, queueName string) error {
+	_, err := q.rdb.XTrimMaxLen(ctx, queueName, 0).Result()
+	if err != nil {
+		return fmt.Errorf("xtrim: %w", err)
+	}
+	log.Debug().Str("stream", queueName).Msg("Queue purge")
+	return nil
+}
+
+func (q *RedisStreamQueue) EnsureGroup(ctx context.Context, queueName, group string) error {
+	// Ensure stream key exists
+	exists, _ := q.rdb.Exists(ctx, queueName).Result()
+	if exists == 0 {
+		entryID, err := q.rdb.XAdd(ctx, &redis.XAddArgs{
+			Stream: queueName,
+			Values: map[string]interface{}{"_init": "1"},
+		}).Result()
+		if err == nil {
+			q.rdb.XDel(ctx, queueName, entryID)
+		}
+	}
+
+	err := q.rdb.XGroupCreateMkStream(ctx, queueName, group, "$").Err()
+	if err != nil {
+		errMsg := err.Error()
+		if contains(errMsg, "BUSYGROUP") {
+			log.Debug().Str("stream", queueName).Str("group", group).Msg("Queue ensure_group: already exists, resetting to $")
+			err2 := q.rdb.XGroupSetID(ctx, queueName, group, "$").Err()
+			if err2 != nil {
+				log.Warn().Err(err2).Str("stream", queueName).Str("group", group).Msg("Queue ensure_group: SETID failed")
+			}
+			return nil
+		}
+		return fmt.Errorf("xgroup create: %w", err)
+	}
+	return nil
+}
+
+// NewQueue creates a MessageQueue implementation based on queue type.
+func NewQueue(queueType string, rdb redis.UniversalClient, maxStreamLen int) (MessageQueue, error) {
+	switch queueType {
+	case "redis_stream":
+		return NewRedisStreamQueue(rdb, maxStreamLen), nil
+	default:
+		return nil, fmt.Errorf("unsupported queue type: %q", queueType)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
