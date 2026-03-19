@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/config"
 )
 
 var validDBName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)

@@ -12,8 +12,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
-	"github.com/hygao1024/astron-claw/backend/internal/model"
-	"github.com/hygao1024/astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/pkg"
 )
 
 // NeverExpires is the maximum MySQL DATETIME — used for tokens with no expiry.

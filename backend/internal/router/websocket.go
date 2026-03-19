@@ -9,9 +9,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/model"
-	"github.com/hygao1024/astron-claw/backend/internal/pkg"
-	"github.com/hygao1024/astron-claw/backend/internal/service"
+	"astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/service"
 )
 
 var wsUpgrader = websocket.Upgrader{

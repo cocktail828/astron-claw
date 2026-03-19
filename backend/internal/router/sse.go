@@ -13,10 +13,10 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/hygao1024/astron-claw/backend/internal/infra/telemetry"
-	"github.com/hygao1024/astron-claw/backend/internal/model"
-	"github.com/hygao1024/astron-claw/backend/internal/pkg"
-	"github.com/hygao1024/astron-claw/backend/internal/service"
+	"astron-claw/backend/internal/infra/telemetry"
+	"astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/service"
 )
 
 const (

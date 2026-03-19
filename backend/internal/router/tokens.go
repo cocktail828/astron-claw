@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/pkg"
 )
 
 // checkRateLimit increments a per-key counter and returns true if the limit is exceeded.

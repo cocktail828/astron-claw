@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/config"
 )
 
 type S3Storage struct {

@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/config"
 )
 
 var provider *sdkmetric.MeterProvider

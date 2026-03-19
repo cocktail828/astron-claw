@@ -6,9 +6,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/model"
-	"github.com/hygao1024/astron-claw/backend/internal/pkg"
-	"github.com/hygao1024/astron-claw/backend/internal/service"
+	"astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/service"
 )
 
 func (app *App) uploadMedia(c *gin.Context) {

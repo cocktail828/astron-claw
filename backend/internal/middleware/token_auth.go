@@ -9,7 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/hygao1024/astron-claw/backend/internal/service"
+	"astron-claw/backend/internal/service"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/config"
 )
 
 // CORSMiddleware creates a CORS middleware from config.

@@ -6,11 +6,11 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
-	"github.com/hygao1024/astron-claw/backend/internal/infra/storage"
-	"github.com/hygao1024/astron-claw/backend/internal/middleware"
-	"github.com/hygao1024/astron-claw/backend/internal/model"
-	"github.com/hygao1024/astron-claw/backend/internal/service"
+	"astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/infra/storage"
+	"astron-claw/backend/internal/middleware"
+	"astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/service"
 )
 
 // App holds all application dependencies.

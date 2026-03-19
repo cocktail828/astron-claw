@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"github.com/hygao1024/astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/model"
 )
 
 const (

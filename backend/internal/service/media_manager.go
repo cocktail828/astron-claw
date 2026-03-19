@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/infra/storage"
+	"astron-claw/backend/internal/infra/storage"
 )
 
 const MaxFileSize = 500 * 1024 * 1024 // 500 MB

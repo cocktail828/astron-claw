@@ -14,8 +14,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
-	"github.com/hygao1024/astron-claw/backend/migrations"
+	"astron-claw/backend/internal/config"
+	"astron-claw/backend/migrations"
 )
 
 const (

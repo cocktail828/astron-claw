@@ -16,8 +16,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/model"
-	"github.com/hygao1024/astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/pkg"
 )
 
 const (

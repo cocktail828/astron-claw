@@ -5,7 +5,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/config"
 )
 
 // ObjectStorage is the unified interface for object storage providers.

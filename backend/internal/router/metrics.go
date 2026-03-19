@@ -7,8 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/infra/telemetry"
-	"github.com/hygao1024/astron-claw/backend/internal/model"
+	"astron-claw/backend/internal/infra/telemetry"
+	"astron-claw/backend/internal/model"
 )
 
 const prometheusContentType = "text/plain; version=0.0.4; charset=utf-8"

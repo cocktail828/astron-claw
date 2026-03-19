@@ -12,12 +12,12 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
 
-	"github.com/hygao1024/astron-claw/backend/internal/config"
-	"github.com/hygao1024/astron-claw/backend/internal/infra"
-	"github.com/hygao1024/astron-claw/backend/internal/infra/storage"
-	"github.com/hygao1024/astron-claw/backend/internal/infra/telemetry"
-	"github.com/hygao1024/astron-claw/backend/internal/router"
-	"github.com/hygao1024/astron-claw/backend/internal/service"
+	"astron-claw/backend/internal/config"
+	"astron-claw/backend/internal/infra"
+	"astron-claw/backend/internal/infra/storage"
+	"astron-claw/backend/internal/infra/telemetry"
+	"astron-claw/backend/internal/router"
+	"astron-claw/backend/internal/service"
 )
 
 func main() {
