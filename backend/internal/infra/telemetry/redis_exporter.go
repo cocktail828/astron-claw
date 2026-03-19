@@ -53,21 +53,7 @@ type RedisMetricExporter struct {
 }
 
 // NewRedisMetricExporter creates a new RedisMetricExporter.
-func NewRedisMetricExporter(host string, port int, password string, db int, cluster bool, serviceName string, exportIntervalMs int) *RedisMetricExporter {
-	var rdb redis.UniversalClient
-	addr := host + ":" + strconv.Itoa(port)
-	if cluster {
-		rdb = redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs:    []string{addr},
-			Password: password,
-		})
-	} else {
-		rdb = redis.NewClient(&redis.Options{
-			Addr:     addr,
-			Password: password,
-			DB:       db,
-		})
-	}
+func NewRedisMetricExporter(rdb redis.UniversalClient, serviceName string, exportIntervalMs int) *RedisMetricExporter {
 	return &RedisMetricExporter{
 		rdb:         rdb,
 		pid:         strconv.Itoa(os.Getpid()),
@@ -180,9 +166,9 @@ func (e *RedisMetricExporter) ForceFlush(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown closes the Redis connection.
+// Shutdown is a no-op since we share the Redis client.
 func (e *RedisMetricExporter) Shutdown(ctx context.Context) error {
-	return e.rdb.Close()
+	return nil
 }
 
 func (e *RedisMetricExporter) buildMeta(m metricdata.Metrics) map[string]string {

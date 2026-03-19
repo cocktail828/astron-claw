@@ -1,7 +1,11 @@
 package service
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
 
@@ -12,6 +16,12 @@ import (
 )
 
 const MaxFileSize = 500 * 1024 * 1024 // 500 MB
+
+var (
+	ErrFileTooLarge = errors.New("file too large")
+	ErrFileEmpty    = errors.New("file is empty")
+	ErrMIMERejected = errors.New("unsupported MIME type")
+)
 
 var allowedMIMEPrefixes = []string{
 	"image/",
@@ -46,16 +56,32 @@ type MediaResult struct {
 func (m *MediaManager) Store(body io.Reader, fileName string, fileSize int64, mimeType, sessionID string) (*MediaResult, error) {
 	if fileSize > MaxFileSize {
 		log.Warn().Int64("size", fileSize).Int64("max", MaxFileSize).Msg("Media rejected: file too large")
-		return nil, nil
+		return nil, ErrFileTooLarge
 	}
 	if fileSize == 0 {
 		log.Warn().Str("name", fileName).Msg("Media rejected: empty file")
-		return nil, nil
+		return nil, ErrFileEmpty
 	}
+
+	// MIME sniffing: read first 512 bytes to detect actual content type
+	buf := make([]byte, 512)
+	n, err := io.ReadAtLeast(body, buf, 1)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("read for MIME detection: %w", err)
+	}
+	detected := http.DetectContentType(buf[:n])
+	// Use detected type if the declared type is generic
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		mimeType = detected
+	}
+
 	if !isMIMEAllowed(mimeType) {
-		log.Warn().Str("mime", mimeType).Str("name", fileName).Msg("Media rejected: unsupported MIME type")
-		return nil, nil
+		log.Warn().Str("mime", mimeType).Str("detected", detected).Str("name", fileName).Msg("Media rejected: unsupported MIME type")
+		return nil, ErrMIMERejected
 	}
+
+	// Re-assemble reader: prepend the buffered bytes
+	combinedBody := io.MultiReader(bytes.NewReader(buf[:n]), body)
 
 	// Sanitize filename
 	safeName := filepath.Base(fileName)
@@ -71,7 +97,7 @@ func (m *MediaManager) Store(body io.Reader, fileName string, fileSize int64, mi
 
 	key := sid + "/" + safeName
 
-	downloadURL, err := m.storage.PutObject(key, body, mimeType, fileSize)
+	downloadURL, err := m.storage.PutObject(key, combinedBody, mimeType, fileSize)
 	if err != nil {
 		return nil, err
 	}

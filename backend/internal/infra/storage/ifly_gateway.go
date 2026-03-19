@@ -70,7 +70,10 @@ func (s *IFlyGatewayStorage) PutObject(key string, body io.Reader, contentType s
 	reqURL := fmt.Sprintf("%s/api/v1/%s?%s", s.cfg.Endpoint, s.cfg.Bucket, params.Encode())
 
 	// Build auth headers
-	headers := buildAuthHeader(reqURL, "POST", s.cfg.AccessKey, s.cfg.SecretKey)
+	headers, err := buildAuthHeader(reqURL, "POST", s.cfg.AccessKey, s.cfg.SecretKey)
+	if err != nil {
+		return "", fmt.Errorf("build auth header: %w", err)
+	}
 
 	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(fileBytes))
 	if err != nil {
@@ -123,8 +126,11 @@ func (s *IFlyGatewayStorage) BucketName() string {
 }
 
 // buildAuthHeader creates HMAC-SHA256 authentication headers for iFlytek Gateway.
-func buildAuthHeader(rawURL, method, apiKey, apiSecret string) map[string]string {
-	u, _ := url.Parse(rawURL)
+func buildAuthHeader(rawURL, method, apiKey, apiSecret string) (map[string]string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse URL: %w", err)
+	}
 	host := u.Hostname()
 	path := u.Path
 
@@ -157,12 +163,5 @@ func buildAuthHeader(rawURL, method, apiKey, apiSecret string) map[string]string
 		"Date":          date,
 		"Digest":        digest,
 		"Authorization": authHeader,
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	}, nil
 }

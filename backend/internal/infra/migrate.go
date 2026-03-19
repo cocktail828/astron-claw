@@ -62,27 +62,28 @@ func RunMigrations(ctx context.Context, cfg config.MysqlConfig, rdb redis.Univer
 		return fmt.Errorf("create migrate instance: %w", err)
 	}
 
-	// Check if there are pending migrations
-	version, dirty, err := m.Version()
-	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
-		return fmt.Errorf("get migration version: %w", err)
-	}
-	if dirty {
-		log.Warn().Uint("version", version).Msg("Database in dirty state, forcing version to retry")
-		if err := m.Force(int(version)); err != nil {
-			return fmt.Errorf("force version: %w", err)
-		}
-	}
-
 	// Try to acquire distributed lock
 	owner := uuid.New().String()
 	acquired, err := rdb.SetNX(ctx, migrateLockKey, owner, migrateLockTTL).Result()
 	if err != nil {
-		log.Warn().Err(err).Msg("Failed to acquire migration lock, proceeding without lock")
-		return runMigrate(m)
+		return fmt.Errorf("acquire migration lock: %w", err)
 	}
 
 	if acquired {
+		// Check dirty state inside the lock
+		version, dirty, vErr := m.Version()
+		if vErr != nil && !errors.Is(vErr, migrate.ErrNilVersion) {
+			releaseLockLua.Run(ctx, rdb, []string{migrateLockKey}, owner)
+			return fmt.Errorf("get migration version: %w", vErr)
+		}
+		if dirty {
+			log.Warn().Uint("version", version).Msg("Database in dirty state, forcing version to retry")
+			if fErr := m.Force(int(version)); fErr != nil {
+				releaseLockLua.Run(ctx, rdb, []string{migrateLockKey}, owner)
+				return fmt.Errorf("force version: %w", fErr)
+			}
+		}
+
 		log.Info().Msg("Acquired migration lock, running migrations...")
 		if err := runMigrate(m); err != nil {
 			// Mark failure
@@ -132,6 +133,5 @@ func waitForMigration(ctx context.Context, rdb redis.UniversalClient) error {
 		case <-time.After(migrateWaitInterval):
 		}
 	}
-	log.Warn().Dur("timeout", migrateWaitTimeout).Msg("Timed out waiting for migration, proceeding")
-	return nil
+	return fmt.Errorf("timed out waiting for migration after %v", migrateWaitTimeout)
 }

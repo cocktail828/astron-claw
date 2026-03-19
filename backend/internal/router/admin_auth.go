@@ -31,7 +31,12 @@ func (app *App) adminAuthStatus(c *gin.Context) {
 func (app *App) adminAuthSetup(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	isSet, _ := app.AdminAuth.IsPasswordSet(ctx)
+	isSet, err := app.AdminAuth.IsPasswordSet(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to check admin password status")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		return
+	}
 	if isSet {
 		model.ErrorResponse(c, model.ErrAdminPasswordExists)
 		return
@@ -44,25 +49,27 @@ func (app *App) adminAuthSetup(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 400, "error": "Invalid request"})
 		return
 	}
-	if len(body.Password) < 4 {
+	if len(body.Password) < 8 {
 		model.ErrorResponse(c, model.ErrAdminPasswordShort)
 		return
 	}
 
 	if err := app.AdminAuth.SetPassword(ctx, body.Password); err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to set admin password")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
 	session, err := app.AdminAuth.CreateSession(ctx)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to create admin session")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
 	log.Info().Msg("Admin password set up for the first time")
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("admin_session", session, 86400, "/", "", false, true)
+	c.SetCookie("admin_session", session, 86400, "/", "", app.Config.Server.SecureCookie, true)
 	c.JSON(200, gin.H{"code": 0})
 }
 
@@ -79,7 +86,8 @@ func (app *App) adminAuthLogin(c *gin.Context) {
 
 	valid, err := app.AdminAuth.VerifyPassword(ctx, body.Password)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to verify admin password")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 	if !valid {
@@ -90,13 +98,14 @@ func (app *App) adminAuthLogin(c *gin.Context) {
 
 	session, err := app.AdminAuth.CreateSession(ctx)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to create admin session after login")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
 	log.Info().Msg("Admin logged in successfully")
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("admin_session", session, 86400, "/", "", false, true)
+	c.SetCookie("admin_session", session, 86400, "/", "", app.Config.Server.SecureCookie, true)
 	c.JSON(200, gin.H{"code": 0})
 }
 
@@ -105,6 +114,6 @@ func (app *App) adminAuthLogout(c *gin.Context) {
 	app.AdminAuth.RemoveSession(c.Request.Context(), adminSession)
 	log.Info().Msg("Admin logged out")
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("admin_session", "", -1, "/", "", false, true)
+	c.SetCookie("admin_session", "", -1, "/", "", app.Config.Server.SecureCookie, true)
 	c.JSON(200, gin.H{"code": 0})
 }

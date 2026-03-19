@@ -2,16 +2,42 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+
+	"github.com/hygao1024/astron-claw/backend/internal/pkg"
 )
 
+var rateLimitScript = redis.NewScript(`
+local count = redis.call("INCR", KEYS[1])
+if count == 1 then
+    redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+return count
+`)
+
 func (app *App) createToken(c *gin.Context) {
-	token, err := app.TokenMgr.Generate(c.Request.Context(), "", 0)
+	// Rate limit: 10 requests per minute per IP
+	ip := c.ClientIP()
+	rateKey := "rate:create_token:" + ip
+	count, err := rateLimitScript.Run(c.Request.Context(), app.RDB, []string{rateKey}, 60).Int64()
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Rate limit check failed")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
-	log.Info().Str("token", token[:10]+"...").Msg("Token created via public API")
+	if count > 10 {
+		c.JSON(429, gin.H{"code": 429, "error": "Too many requests. Please try again later."})
+		return
+	}
+
+	token, err := app.TokenMgr.Generate(c.Request.Context(), "", 0)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to generate token")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		return
+	}
+	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Token created via public API")
 	c.JSON(200, gin.H{"code": 0, "token": token})
 }
 
@@ -30,11 +56,8 @@ func (app *App) validateToken(c *gin.Context) {
 		botConnected = app.Bridge.IsBotConnected(c.Request.Context(), body.Token)
 	}
 
-	tokenPrefix := "?"
-	if len(body.Token) >= 10 {
-		tokenPrefix = body.Token[:10]
-	}
-	log.Debug().Str("token", tokenPrefix+"...").Bool("valid", valid).Msg("Token validate")
+	tokenPrefix := pkg.SafePrefix(body.Token, 10)
+	log.Debug().Str("token", tokenPrefix).Bool("valid", valid).Msg("Token validate")
 
 	c.JSON(200, gin.H{
 		"code":          0,

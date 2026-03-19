@@ -11,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"github.com/hygao1024/astron-claw/backend/internal/model"
@@ -19,6 +20,7 @@ import (
 const (
 	adminSessionTTL    = 86400 * time.Second // 24 hours
 	adminSessionPrefix = "admin:session:"
+	adminSessionIdx    = "admin:session_idx"
 )
 
 // AdminAuth manages admin password auth with MySQL storage and Redis sessions.
@@ -46,33 +48,37 @@ func (a *AdminAuth) IsPasswordSet(ctx context.Context) (bool, error) {
 
 // SetPassword sets or updates the admin password.
 func (a *AdminAuth) SetPassword(ctx context.Context, password string) error {
-	saltBytes := make([]byte, 16)
-	if _, err := rand.Read(saltBytes); err != nil {
-		return fmt.Errorf("generate salt: %w", err)
+	if len(password) > 72 {
+		return fmt.Errorf("password must not exceed 72 bytes")
 	}
-	salt := hex.EncodeToString(saltBytes)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("bcrypt hash: %w", err)
+	}
 
-	hash := sha256.Sum256([]byte(salt + password))
-	pwHash := hex.EncodeToString(hash[:])
-
-	return a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Upsert salt
-		if err := upsertConfig(tx, "password_salt", salt); err != nil {
+	err = a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Set salt to "bcrypt" as a marker for the new scheme
+		if err := upsertConfig(tx, "password_salt", "bcrypt"); err != nil {
 			return err
 		}
-		// Upsert hash
-		if err := upsertConfig(tx, "password_hash", pwHash); err != nil {
+		if err := upsertConfig(tx, "password_hash", string(hash)); err != nil {
 			return err
 		}
-		log.Info().Msg("Admin password updated")
+		log.Info().Msg("Admin password updated (bcrypt)")
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// Invalidate all existing admin sessions
+	a.invalidateAllSessions(ctx)
+
+	return nil
 }
 
 // VerifyPassword checks if the given password matches the stored hash.
 func (a *AdminAuth) VerifyPassword(ctx context.Context, password string) (bool, error) {
-	var salt, storedHash string
-
 	var saltConfig model.AdminConfig
 	if err := a.db.WithContext(ctx).Where("`key` = ?", "password_salt").First(&saltConfig).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -81,19 +87,42 @@ func (a *AdminAuth) VerifyPassword(ctx context.Context, password string) (bool, 
 		}
 		return false, err
 	}
-	salt = saltConfig.Value
 
 	var hashConfig model.AdminConfig
 	if err := a.db.WithContext(ctx).Where("`key` = ?", "password_hash").First(&hashConfig).Error; err != nil {
 		return false, err
 	}
-	storedHash = hashConfig.Value
 
+	if saltConfig.Value == "bcrypt" {
+		// New bcrypt path
+		err := bcrypt.CompareHashAndPassword([]byte(hashConfig.Value), []byte(password))
+		if err == bcrypt.ErrMismatchedHashAndPassword {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("bcrypt compare: %w", err)
+		}
+		return true, nil
+	}
+
+	// Legacy SHA-256 path
+	salt := saltConfig.Value
+	storedHash := hashConfig.Value
 	expected := sha256.Sum256([]byte(salt + password))
 	expectedHex := hex.EncodeToString(expected[:])
 
-	// Constant-time comparison
-	return subtle.ConstantTimeCompare([]byte(expectedHex), []byte(storedHash)) == 1, nil
+	if subtle.ConstantTimeCompare([]byte(expectedHex), []byte(storedHash)) != 1 {
+		return false, nil
+	}
+
+	// Auto-upgrade to bcrypt
+	log.Info().Msg("Auto-upgrading admin password from SHA-256 to bcrypt")
+	if err := a.SetPassword(ctx, password); err != nil {
+		log.Error().Err(err).Msg("Failed to auto-upgrade password to bcrypt")
+		// Still return true since the password matched
+	}
+
+	return true, nil
 }
 
 // CreateSession creates a new admin session and stores it in Redis.
@@ -103,9 +132,11 @@ func (a *AdminAuth) CreateSession(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("generate session token: %w", err)
 	}
 	token := hex.EncodeToString(b)
-	if err := a.rdb.Set(ctx, adminSessionPrefix+token, "1", adminSessionTTL).Err(); err != nil {
+	key := adminSessionPrefix + token
+	if err := a.rdb.Set(ctx, key, "1", adminSessionTTL).Err(); err != nil {
 		return "", fmt.Errorf("store session: %w", err)
 	}
+	a.rdb.SAdd(ctx, adminSessionIdx, token)
 	log.Debug().Msg("Admin session created")
 	return token, nil
 }
@@ -128,8 +159,22 @@ func (a *AdminAuth) ValidateSession(ctx context.Context, sessionToken string) bo
 func (a *AdminAuth) RemoveSession(ctx context.Context, sessionToken string) {
 	if sessionToken != "" {
 		a.rdb.Del(ctx, adminSessionPrefix+sessionToken)
+		a.rdb.SRem(ctx, adminSessionIdx, sessionToken)
 		log.Debug().Msg("Admin session removed")
 	}
+}
+
+func (a *AdminAuth) invalidateAllSessions(ctx context.Context) {
+	tokens, err := a.rdb.SMembers(ctx, adminSessionIdx).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to read admin session index for invalidation")
+		return
+	}
+	for _, token := range tokens {
+		a.rdb.Del(ctx, adminSessionPrefix+token)
+	}
+	a.rdb.Del(ctx, adminSessionIdx)
+	log.Info().Msg("All admin sessions invalidated")
 }
 
 func upsertConfig(tx *gorm.DB, key, value string) error {

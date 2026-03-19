@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
 )
@@ -19,12 +20,35 @@ type MysqlConfig struct {
 }
 
 func (c MysqlConfig) DSN() string {
-	return c.User + ":" + c.Password + "@tcp(" + c.Host + ":" + strconv.Itoa(c.Port) + ")/" + c.Database + "?charset=utf8mb4&parseTime=True&loc=UTC"
+	cfg := mysqldriver.Config{
+		User:   c.User,
+		Passwd: c.Password,
+		Net:    "tcp",
+		Addr:   c.Host + ":" + strconv.Itoa(c.Port),
+		DBName: c.Database,
+		Params: map[string]string{
+			"charset":   "utf8mb4",
+			"parseTime": "True",
+			"loc":       "UTC",
+		},
+	}
+	return cfg.FormatDSN()
 }
 
 // DSNWithoutDB returns DSN without database name for initial database creation
 func (c MysqlConfig) DSNWithoutDB() string {
-	return c.User + ":" + c.Password + "@tcp(" + c.Host + ":" + strconv.Itoa(c.Port) + ")/?charset=utf8mb4&parseTime=True&loc=UTC"
+	cfg := mysqldriver.Config{
+		User:   c.User,
+		Passwd: c.Password,
+		Net:    "tcp",
+		Addr:   c.Host + ":" + strconv.Itoa(c.Port),
+		Params: map[string]string{
+			"charset":   "utf8mb4",
+			"parseTime": "True",
+			"loc":       "UTC",
+		},
+	}
+	return cfg.FormatDSN()
 }
 
 type RedisConfig struct {
@@ -43,6 +67,7 @@ type ServerConfig struct {
 	AccessLog      bool
 	WSPingInterval int
 	WSPingTimeout  int
+	SecureCookie   bool
 }
 
 type QueueConfig struct {
@@ -60,6 +85,7 @@ type StorageConfig struct {
 	Bucket         string
 	Region         string
 	TTL            int
+	PublicRead     bool
 }
 
 type OtlpConfig struct {
@@ -125,6 +151,7 @@ func Load() *AppConfig {
 			AccessLog:      getEnvBool("SERVER_ACCESS_LOG", true),
 			WSPingInterval: getEnvInt("WS_PING_INTERVAL", 10),
 			WSPingTimeout:  getEnvInt("WS_PING_TIMEOUT", 10),
+			SecureCookie:   getEnvBool("COOKIE_SECURE", false),
 		},
 		Queue: QueueConfig{
 			Type:         getEnv("QUEUE_TYPE", "redis_stream"),
@@ -140,6 +167,7 @@ func Load() *AppConfig {
 			Bucket:         getEnv("OSS_BUCKET", "astron-claw-media"),
 			Region:         getEnv("OSS_REGION", "us-east-1"),
 			TTL:            getEnvInt("OSS_TTL", 157788000),
+			PublicRead:     getEnvBool("OSS_PUBLIC_READ", true),
 		},
 		OTLP: OtlpConfig{
 			Enabled:          getEnvBool("OTLP_ENABLED", false),

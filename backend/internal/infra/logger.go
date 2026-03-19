@@ -75,7 +75,7 @@ type levelFilterWriter struct {
 }
 
 func (w *levelFilterWriter) Write(p []byte) (n int, err error) {
-	return w.writer.Write(p)
+	return len(p), nil
 }
 
 func (w *levelFilterWriter) WriteLevel(level zerolog.Level, p []byte) (n int, err error) {

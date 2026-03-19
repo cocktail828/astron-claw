@@ -3,11 +3,13 @@ package router
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
 	"github.com/hygao1024/astron-claw/backend/internal/config"
 	"github.com/hygao1024/astron-claw/backend/internal/infra/storage"
 	"github.com/hygao1024/astron-claw/backend/internal/middleware"
+	"github.com/hygao1024/astron-claw/backend/internal/model"
 	"github.com/hygao1024/astron-claw/backend/internal/service"
 )
 
@@ -53,12 +55,16 @@ func SetupRouter(app *App) *gin.Engine {
 	r.POST("/api/admin/auth/login", app.adminAuthLogin)
 	r.POST("/api/admin/auth/logout", app.adminAuthLogout)
 
-	// Admin
-	r.GET("/api/admin/tokens", app.listTokens)
-	r.POST("/api/admin/tokens", app.adminCreateToken)
-	r.PATCH("/api/admin/tokens/:token", app.adminUpdateToken)
-	r.DELETE("/api/admin/tokens/:token", app.adminDeleteToken)
-	r.POST("/api/admin/cleanup", app.adminCleanup)
+	// Admin (auth middleware applied to group)
+	admin := r.Group("/api/admin")
+	admin.Use(app.adminAuthMiddleware())
+	{
+		admin.GET("/tokens", app.listTokens)
+		admin.POST("/tokens", app.adminCreateToken)
+		admin.PATCH("/tokens/:token", app.adminUpdateToken)
+		admin.DELETE("/tokens/:token", app.adminDeleteToken)
+		admin.POST("/cleanup", app.adminCleanup)
+	}
 
 	// Media
 	r.POST("/api/media/upload", app.uploadMedia)
@@ -72,4 +78,17 @@ func SetupRouter(app *App) *gin.Engine {
 	r.GET("/bridge/bot", app.wsBot)
 
 	return r
+}
+
+func (app *App) adminAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		adminSession, _ := c.Cookie("admin_session")
+		if !app.AdminAuth.ValidateSession(c.Request.Context(), adminSession) {
+			log.Warn().Msg("Admin auth rejected: missing or invalid session cookie")
+			model.ErrorResponse(c, model.ErrAuthUnauthorized)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }

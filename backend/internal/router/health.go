@@ -12,7 +12,7 @@ func (app *App) healthCheck(c *gin.Context) {
 	// Check MySQL
 	sqlDB, err := app.DB.DB()
 	if err == nil {
-		if err := sqlDB.Ping(); err == nil {
+		if err := sqlDB.PingContext(c.Request.Context()); err == nil {
 			mysqlOK = true
 		} else {
 			log.Warn().Err(err).Msg("MySQL health check failed")
@@ -27,12 +27,14 @@ func (app *App) healthCheck(c *gin.Context) {
 	}
 
 	status := "ok"
+	httpCode := 200
 	if !mysqlOK || !redisOK {
 		status = "degraded"
+		httpCode = 503
 		log.Warn().Bool("mysql", mysqlOK).Bool("redis", redisOK).Msg("Health check degraded")
 	}
 
-	c.JSON(200, gin.H{
+	c.JSON(httpCode, gin.H{
 		"code":   0,
 		"status": status,
 		"mysql":  mysqlOK,

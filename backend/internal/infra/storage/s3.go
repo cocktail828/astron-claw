@@ -84,25 +84,29 @@ func (s *S3Storage) EnsureBucket() error {
 	log.Info().Str("bucket", s.cfg.Bucket).Msg("S3 bucket created")
 
 	// Set public read policy
-	policy := map[string]interface{}{
-		"Version": "2012-10-17",
-		"Statement": []map[string]interface{}{
-			{
-				"Effect":    "Allow",
-				"Principal": "*",
-				"Action":    "s3:GetObject",
-				"Resource":  fmt.Sprintf("arn:aws:s3:::%s/*", s.cfg.Bucket),
+	if s.cfg.PublicRead {
+		policy := map[string]interface{}{
+			"Version": "2012-10-17",
+			"Statement": []map[string]interface{}{
+				{
+					"Effect":    "Allow",
+					"Principal": "*",
+					"Action":    "s3:GetObject",
+					"Resource":  fmt.Sprintf("arn:aws:s3:::%s/*", s.cfg.Bucket),
+				},
 			},
-		},
-	}
-	policyJSON, _ := json.Marshal(policy)
-	policyStr := string(policyJSON)
-	_, err = s.client.PutBucketPolicy(ctx, &s3.PutBucketPolicyInput{
-		Bucket: &s.cfg.Bucket,
-		Policy: &policyStr,
-	})
-	if err != nil {
-		log.Warn().Err(err).Msg("Failed to set bucket policy")
+		}
+		policyJSON, _ := json.Marshal(policy)
+		policyStr := string(policyJSON)
+		_, err = s.client.PutBucketPolicy(ctx, &s3.PutBucketPolicyInput{
+			Bucket: &s.cfg.Bucket,
+			Policy: &policyStr,
+		})
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to set bucket policy")
+		}
+	} else {
+		log.Warn().Str("bucket", s.cfg.Bucket).Msg("S3 bucket created without public-read policy (OSS_PUBLIC_READ=false)")
 	}
 
 	// Set 7-day lifecycle

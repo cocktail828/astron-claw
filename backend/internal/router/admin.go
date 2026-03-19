@@ -3,27 +3,24 @@ package router
 import (
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"github.com/hygao1024/astron-claw/backend/internal/middleware"
 	"github.com/hygao1024/astron-claw/backend/internal/model"
+	"github.com/hygao1024/astron-claw/backend/internal/pkg"
 )
 
-func (app *App) requireAdmin(c *gin.Context) bool {
-	adminSession, _ := c.Cookie("admin_session")
-	if !app.AdminAuth.ValidateSession(c.Request.Context(), adminSession) {
-		log.Warn().Msg("Admin auth rejected: missing or invalid session cookie")
-		model.ErrorResponse(c, model.ErrAuthUnauthorized)
-		return false
+func maskToken(token string) string {
+	if len(token) <= 8 {
+		return token
 	}
-	return true
+	return token[:8] + strings.Repeat("*", 4)
 }
 
 func (app *App) listTokens(c *gin.Context) {
-	if !app.requireAdmin(c) {
-		return
-	}
 	ctx := c.Request.Context()
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -43,10 +40,11 @@ func (app *App) listTokens(c *gin.Context) {
 		pageSize = 100
 	}
 
-	// Fetch all tokens (for bot status merge)
-	data, err := app.TokenMgr.ListAll(ctx, 1, 10000, search)
+	// Cap at 5000 — in-memory merge with bot status requires all records loaded
+	data, err := app.TokenMgr.ListAll(ctx, 1, 5000, search)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to list tokens")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
@@ -63,7 +61,7 @@ func (app *App) listTokens(c *gin.Context) {
 	allTokens := make([]tokenInfo, len(data.Items))
 	for i, t := range data.Items {
 		allTokens[i] = tokenInfo{
-			Token:     t.Token,
+			Token:     maskToken(t.Token),
 			Name:      t.Name,
 			CreatedAt: t.CreatedAt,
 			ExpiresAt: t.ExpiresAt,
@@ -139,10 +137,6 @@ func (app *App) listTokens(c *gin.Context) {
 }
 
 func (app *App) adminCreateToken(c *gin.Context) {
-	if !app.requireAdmin(c) {
-		return
-	}
-
 	var body struct {
 		Name      string `json:"name"`
 		ExpiresIn int    `json:"expires_in"`
@@ -154,32 +148,32 @@ func (app *App) adminCreateToken(c *gin.Context) {
 
 	token, err := app.TokenMgr.Generate(c.Request.Context(), body.Name, body.ExpiresIn)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to create token")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
-	log.Info().Str("token", token[:16]+"...").Str("name", body.Name).Msg("Admin created token")
+	log.Info().Str("token", pkg.SafePrefix(token, 16)).Str("name", body.Name).Msg("Admin created token")
 	c.JSON(200, gin.H{"code": 0, "token": token})
 }
 
 func (app *App) adminDeleteToken(c *gin.Context) {
-	if !app.requireAdmin(c) {
-		return
-	}
 	tokenValue := c.Param("token")
 
 	if err := app.TokenMgr.Remove(c.Request.Context(), tokenValue); err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to delete token")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
-	app.Bridge.RemoveBotSessions(c.Request.Context(), tokenValue)
-	log.Info().Str("token", tokenValue[:16]+"...").Msg("Admin deleted token")
+	if err := app.Bridge.RemoveBotSessions(c.Request.Context(), tokenValue); err != nil {
+		log.Error().Err(err).Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Failed to remove bot sessions")
+		// Don't fail the delete - token is already removed
+	}
+	middleware.InvalidateTokenCache(c.Request.Context(), app.RDB, tokenValue)
+	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Admin deleted token")
 	c.JSON(200, gin.H{"code": 0})
 }
 
 func (app *App) adminUpdateToken(c *gin.Context) {
-	if !app.requireAdmin(c) {
-		return
-	}
 	tokenValue := c.Param("token")
 
 	var body map[string]interface{}
@@ -200,31 +194,31 @@ func (app *App) adminUpdateToken(c *gin.Context) {
 
 	found, err := app.TokenMgr.Update(c.Request.Context(), tokenValue, name, expiresIn)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to update token")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 	if !found {
 		model.ErrorResponse(c, model.ErrTokenNotFound)
 		return
 	}
-	log.Info().Str("token", tokenValue[:16]+"...").Msg("Admin updated token")
+	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Admin updated token")
 	c.JSON(200, gin.H{"code": 0})
 }
 
 func (app *App) adminCleanup(c *gin.Context) {
-	if !app.requireAdmin(c) {
-		return
-	}
 	ctx := c.Request.Context()
 
 	tokenCount, err := app.TokenMgr.CleanupExpired(ctx)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to cleanup expired tokens")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 	sessionCount, err := app.Bridge.CleanupOldSessions(ctx, 30)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to cleanup old sessions")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 	log.Info().Int("tokens", tokenCount).Int("sessions", sessionCount).Msg("Admin cleanup")

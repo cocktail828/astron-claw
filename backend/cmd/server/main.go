@@ -39,7 +39,7 @@ func main() {
 	}
 
 	// Initialize OTLP telemetry
-	if err := telemetry.Init(cfg.OTLP, cfg.Redis); err != nil {
+	if err := telemetry.Init(cfg.OTLP, rdb); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialise OTLP telemetry")
 	}
 	telemetry.EnsureInstruments()
@@ -92,20 +92,25 @@ func main() {
 	// Start HTTP server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
-
-	go func() {
-		log.Info().Str("addr", addr).Msg("Astron Claw Bridge Server started")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msg("Server listen error")
-		}
-	}()
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Info().Str("addr", addr).Msg("Astron Claw Bridge Server started")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("Server listen error")
+			quit <- syscall.SIGTERM
+		}
+	}()
+
 	<-quit
 
 	log.Info().Msg("Shutting down server...")

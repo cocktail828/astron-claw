@@ -39,8 +39,7 @@ type MediaItem struct {
 
 func (app *App) chatSSE(c *gin.Context) {
 	t0 := time.Now()
-	token, _ := c.Get("token")
-	tokenStr := token.(string)
+	tokenStr := c.GetString("token")
 	tp := telemetry.TokenPrefix(tokenStr)
 
 	var body ChatRequest
@@ -136,6 +135,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	inbox := service.ChatInboxPrefix + tokenStr + ":" + sessionID
 	app.Queue.Purge(ctx, inbox)
 	app.Queue.EnsureGroup(ctx, inbox, "sse")
+	app.Bridge.TrackChatInbox(ctx, tokenStr, inbox)
 
 	// Send message to bot
 	reqID, err := app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
@@ -149,8 +149,14 @@ func (app *App) chatSSE(c *gin.Context) {
 	// Success — entering SSE stream
 	recordReq("success", 200)
 
-	log.Info().Str("req", reqID).Str("session", sessionID[:8]).Str("token", tp).
+	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(500, gin.H{"code": 500, "error": "Streaming not supported"})
+		return
+	}
 
 	// Set SSE headers
 	c.Header("Content-Type", "text/event-stream")
@@ -158,12 +164,6 @@ func (app *App) chatSSE(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		c.JSON(500, gin.H{"code": 500, "error": "Streaming not supported"})
-		return
-	}
 
 	// Track active stream
 	streamStart := time.Now()
@@ -189,7 +189,10 @@ func (app *App) chatSSE(c *gin.Context) {
 		"sessionId":     sessionID,
 		"sessionNumber": sessionNumber,
 	})
-	_, _ = c.Writer.WriteString(sessionEvent)
+	if _, err := c.Writer.WriteString(sessionEvent); err != nil {
+		closeReason = "write_error"
+		return
+	}
 	flusher.Flush()
 
 	lastHeartbeat := time.Now()
@@ -216,7 +219,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			return
 		}
 
-		result, err := app.Queue.Consume(context.Background(), inbox, "sse", reqID, sseBlockMs)
+		result, err := app.Queue.Consume(c.Request.Context(), inbox, "sse", reqID, sseBlockMs)
 		if err != nil {
 			log.Error().Err(err).Str("token", tp).Msg("SSE: consume error")
 			closeReason = "error"
@@ -302,12 +305,12 @@ func (app *App) chatSSE(c *gin.Context) {
 }
 
 func (app *App) listSessions(c *gin.Context) {
-	token, _ := c.Get("token")
-	tokenStr := token.(string)
+	tokenStr := c.GetString("token")
 
 	sessions, err := app.Bridge.GetSessions(c.Request.Context(), tokenStr)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to list sessions")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
@@ -323,19 +326,20 @@ func (app *App) listSessions(c *gin.Context) {
 }
 
 func (app *App) createSession(c *gin.Context) {
-	token, _ := c.Get("token")
-	tokenStr := token.(string)
+	tokenStr := c.GetString("token")
 	ctx := c.Request.Context()
 
 	sessionID, sessionNumber, err := app.Bridge.CreateSession(ctx, tokenStr)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to create session")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
 	sessions, err := app.Bridge.GetSessions(ctx, tokenStr)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
+		log.Error().Err(err).Msg("Failed to list sessions")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 

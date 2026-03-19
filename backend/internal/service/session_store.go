@@ -2,14 +2,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/hygao1024/astron-claw/backend/internal/model"
+	"github.com/hygao1024/astron-claw/backend/internal/pkg"
 )
 
 const (
@@ -31,37 +34,39 @@ func NewSessionStore(db *gorm.DB, rdb redis.UniversalClient) *SessionStore {
 // CreateSession persists a new session to MySQL and caches in Redis.
 func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID string) (int, error) {
 	now := time.Now().UTC()
+	var sessionNumber int
 
-	// Get max session number for this token
-	var maxNum int
-	err := s.db.WithContext(ctx).Model(&model.ChatSession{}).
-		Where("token = ?", token).
-		Select("COALESCE(MAX(session_number), 0)").
-		Scan(&maxNum).Error
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var maxNum int
+		if err := tx.Model(&model.ChatSession{}).
+			Where("token = ?", token).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("COALESCE(MAX(session_number), 0)").
+			Scan(&maxNum).Error; err != nil {
+			return fmt.Errorf("get max session number: %w", err)
+		}
+		sessionNumber = maxNum + 1
+
+		session := model.ChatSession{
+			Token:         token,
+			SessionID:     sessionID,
+			SessionNumber: sessionNumber,
+			CreatedAt:     now,
+		}
+		return tx.Create(&session).Error
+	})
 	if err != nil {
-		return 0, fmt.Errorf("get max session number: %w", err)
-	}
-	sessionNumber := maxNum + 1
-
-	// Insert to MySQL
-	session := model.ChatSession{
-		Token:         token,
-		SessionID:     sessionID,
-		SessionNumber: sessionNumber,
-		CreatedAt:     now,
-	}
-	if err := s.db.WithContext(ctx).Create(&session).Error; err != nil {
 		return 0, fmt.Errorf("create session: %w", err)
 	}
 
-	// Redis — best effort
+	// Redis — best effort (outside transaction)
 	sessionsKey := sessionsPrefix + token
-	if err := s.rdb.RPush(ctx, sessionsKey, sessionID).Err(); err != nil {
-		log.Warn().Err(err).Str("token", token[:10]+"...").Msg("Redis cache write failed for create_session")
+	sessionJSON, _ := json.Marshal(SessionInfo{ID: sessionID, Number: sessionNumber})
+	if err := s.rdb.RPush(ctx, sessionsKey, string(sessionJSON)).Err(); err != nil {
+		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache write failed for create_session")
 	} else {
 		s.rdb.Expire(ctx, sessionsKey, sessionCacheTTL)
 	}
-
 	return sessionNumber, nil
 }
 
@@ -71,7 +76,7 @@ func (s *SessionStore) RemoveSessions(ctx context.Context, token string) error {
 		return fmt.Errorf("delete sessions: %w", err)
 	}
 	if err := s.rdb.Del(ctx, sessionsPrefix+token).Err(); err != nil {
-		log.Warn().Err(err).Str("token", token[:10]+"...").Msg("Redis cache delete failed for remove_sessions")
+		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache delete failed for remove_sessions")
 	}
 	return nil
 }
@@ -100,11 +105,18 @@ func (s *SessionStore) GetSessions(ctx context.Context, token string) ([]Session
 	sessionsKey := sessionsPrefix + token
 	cached, err := s.rdb.LRange(ctx, sessionsKey, 0, -1).Result()
 	if err == nil && len(cached) > 0 {
-		sessions := make([]SessionInfo, len(cached))
-		for i, sid := range cached {
-			sessions[i] = SessionInfo{ID: sid, Number: i + 1}
+		sessions := make([]SessionInfo, 0, len(cached))
+		for _, raw := range cached {
+			var info SessionInfo
+			if err := json.Unmarshal([]byte(raw), &info); err != nil {
+				// Cache is corrupted, fall through to DB
+				break
+			}
+			sessions = append(sessions, info)
 		}
-		return sessions, nil
+		if len(sessions) == len(cached) {
+			return sessions, nil
+		}
 	}
 
 	// Cache miss — query MySQL
@@ -160,7 +172,7 @@ func (s *SessionStore) CleanupOldSessions(ctx context.Context, maxAgeSeconds flo
 	}
 	for token := range affected {
 		if err := s.rdb.Del(ctx, sessionsPrefix+token).Err(); err != nil {
-			log.Warn().Err(err).Str("token", token[:10]+"...").Msg("Redis cache invalidation failed during session cleanup")
+			log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache invalidation failed during session cleanup")
 		}
 	}
 
@@ -176,12 +188,13 @@ func (s *SessionStore) repopulateCache(ctx context.Context, token string, rows [
 	if len(rows) > 0 {
 		sids := make([]interface{}, len(rows))
 		for i, r := range rows {
-			sids[i] = r.SessionID
+			j, _ := json.Marshal(SessionInfo{ID: r.SessionID, Number: r.SessionNumber})
+			sids[i] = string(j)
 		}
 		pipe.RPush(ctx, sessionsKey, sids...)
 		pipe.Expire(ctx, sessionsKey, sessionCacheTTL)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		log.Warn().Err(err).Str("token", token[:10]+"...").Msg("Redis cache repopulate failed")
+		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache repopulate failed")
 	}
 }

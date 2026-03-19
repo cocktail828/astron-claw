@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -68,7 +69,7 @@ func (q *RedisStreamQueue) Consume(ctx context.Context, queueName, group, consum
 		}
 		// NOGROUP — group hasn't been created yet
 		errMsg := err.Error()
-		if contains(errMsg, "NOGROUP") {
+		if strings.Contains(errMsg, "NOGROUP") {
 			log.Warn().Str("stream", queueName).Str("group", group).Msg("Queue NOGROUP, recreating")
 			_ = q.EnsureGroup(ctx, queueName, group)
 			return nil, nil
@@ -138,12 +139,8 @@ func (q *RedisStreamQueue) EnsureGroup(ctx context.Context, queueName, group str
 	err := q.rdb.XGroupCreateMkStream(ctx, queueName, group, "$").Err()
 	if err != nil {
 		errMsg := err.Error()
-		if contains(errMsg, "BUSYGROUP") {
-			log.Debug().Str("stream", queueName).Str("group", group).Msg("Queue ensure_group: already exists, resetting to $")
-			err2 := q.rdb.XGroupSetID(ctx, queueName, group, "$").Err()
-			if err2 != nil {
-				log.Warn().Err(err2).Str("stream", queueName).Str("group", group).Msg("Queue ensure_group: SETID failed")
-			}
+		if strings.Contains(errMsg, "BUSYGROUP") {
+			log.Debug().Str("stream", queueName).Str("group", group).Msg("Queue ensure_group: already exists")
 			return nil
 		}
 		return fmt.Errorf("xgroup create: %w", err)
@@ -159,17 +156,4 @@ func NewQueue(queueType string, rdb redis.UniversalClient, maxStreamLen int) (Me
 	default:
 		return nil, fmt.Errorf("unsupported queue type: %q", queueType)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

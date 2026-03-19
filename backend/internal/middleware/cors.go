@@ -13,6 +13,8 @@ func CORSMiddleware(cfg config.CorsConfig) gin.HandlerFunc {
 		return func(c *gin.Context) { c.Next() }
 	}
 
+	allowAll := len(cfg.Origins) == 1 && cfg.Origins[0] == "*"
+
 	corsConfig := cors.Config{
 		AllowOriginFunc: func(origin string) bool {
 			for _, o := range cfg.Origins {
@@ -22,7 +24,7 @@ func CORSMiddleware(cfg config.CorsConfig) gin.HandlerFunc {
 			}
 			return false
 		},
-		AllowCredentials: true,
+		AllowCredentials: !allowAll,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"*"},
 	}

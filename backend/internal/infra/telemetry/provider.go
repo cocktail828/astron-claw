@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -16,7 +17,7 @@ import (
 var provider *sdkmetric.MeterProvider
 
 // Init initializes OTel MeterProvider with RedisMetricExporter.
-func Init(otlpCfg config.OtlpConfig, redisCfg config.RedisConfig) error {
+func Init(otlpCfg config.OtlpConfig, rdb redis.UniversalClient) error {
 	if !otlpCfg.Enabled {
 		log.Info().Msg("OTLP telemetry disabled (OTLP_ENABLED=false)")
 		return nil
@@ -28,11 +29,7 @@ func Init(otlpCfg config.OtlpConfig, redisCfg config.RedisConfig) error {
 	}
 
 	exporter := NewRedisMetricExporter(
-		redisCfg.Host,
-		redisCfg.Port,
-		redisCfg.Password,
-		redisCfg.DB,
-		redisCfg.Cluster,
+		rdb,
 		otlpCfg.ServiceName,
 		otlpCfg.ExportIntervalMs,
 	)

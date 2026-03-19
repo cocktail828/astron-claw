@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -101,16 +102,24 @@ func TestLoad_EnvOverrides(t *testing.T) {
 func TestMysqlConfig_DSN(t *testing.T) {
 	cfg := MysqlConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "test"}
 	dsn := cfg.DSN()
-	if dsn != "root:pass@tcp(localhost:3306)/test?charset=utf8mb4&parseTime=True&loc=UTC" {
-		t.Errorf("DSN = %q", dsn)
+	// FormatDSN includes all params; check key substrings
+	for _, want := range []string{"root:pass@tcp(localhost:3306)/test?", "charset=utf8mb4", "parseTime=True", "loc=UTC"} {
+		if !strings.Contains(dsn, want) {
+			t.Errorf("DSN = %q, missing %q", dsn, want)
+		}
 	}
 }
 
 func TestMysqlConfig_DSNWithoutDB(t *testing.T) {
 	cfg := MysqlConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "test"}
 	dsn := cfg.DSNWithoutDB()
-	if dsn != "root:pass@tcp(localhost:3306)/?charset=utf8mb4&parseTime=True&loc=UTC" {
-		t.Errorf("DSNWithoutDB = %q", dsn)
+	for _, want := range []string{"root:pass@tcp(localhost:3306)/?", "charset=utf8mb4", "parseTime=True", "loc=UTC"} {
+		if !strings.Contains(dsn, want) {
+			t.Errorf("DSNWithoutDB = %q, missing %q", dsn, want)
+		}
+	}
+	if strings.Contains(dsn, "/test?") {
+		t.Errorf("DSNWithoutDB should not contain database name, got %q", dsn)
 	}
 }
 

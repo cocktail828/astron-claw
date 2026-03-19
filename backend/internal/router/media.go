@@ -1,16 +1,18 @@
 package router
 
 import (
+	"errors"
+
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
 	"github.com/hygao1024/astron-claw/backend/internal/model"
+	"github.com/hygao1024/astron-claw/backend/internal/pkg"
 	"github.com/hygao1024/astron-claw/backend/internal/service"
 )
 
 func (app *App) uploadMedia(c *gin.Context) {
-	token, _ := c.Get("token")
-	tokenStr := token.(string)
+	tokenStr := c.GetString("token")
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -39,17 +41,20 @@ func (app *App) uploadMedia(c *gin.Context) {
 
 	result, err := app.MediaMgr.Store(file, fileName, fileSize, mimeType, sessionID)
 	if err != nil {
-		log.Error().Err(err).Msg("Media upload failed")
-		c.JSON(500, gin.H{"code": 500, "error": err.Error()})
-		return
-	}
-	if result == nil {
-		log.Warn().Str("name", fileName).Str("mime", mimeType).Msg("Media upload rejected: invalid file")
-		model.ErrorResponse(c, model.ErrMediaInvalidFile)
+		if errors.Is(err, service.ErrFileTooLarge) {
+			model.ErrorResponse(c, model.ErrMediaFileTooLarge)
+			return
+		}
+		if errors.Is(err, service.ErrFileEmpty) || errors.Is(err, service.ErrMIMERejected) {
+			model.ErrorResponse(c, model.ErrMediaInvalidFile)
+			return
+		}
+		log.Error().Err(err).Msg("Media store failed")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
-	log.Info().Str("name", fileName).Int64("size", fileSize).Str("token", tokenStr[:10]+"...").
+	log.Info().Str("name", fileName).Int64("size", fileSize).Str("token", pkg.SafePrefix(tokenStr, 10)).
 		Msg("Media uploaded")
 	c.JSON(200, gin.H{
 		"code":        0,
