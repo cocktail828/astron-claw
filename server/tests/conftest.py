@@ -59,6 +59,8 @@ def mock_redis():
     redis.zrangebyscore = AsyncMock(return_value=[])
     redis.zremrangebyscore = AsyncMock(return_value=0)
     redis.zcount = AsyncMock(return_value=0)
+    # INCR mock (used by bridge gen counter)
+    redis.incr = AsyncMock(return_value=1)
     # scan_iter mock (returns async iterator)
     async def _empty_scan_iter(**kwargs):
         return

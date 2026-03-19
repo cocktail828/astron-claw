@@ -22,6 +22,7 @@ _BOT_ALIVE_KEY = "bridge:bot_alive"            # ZSET: score=timestamp, member=t
 _BOT_INBOX_PREFIX = "bridge:bot_inbox:"        # STREAM per token: messages TO bot
 CHAT_INBOX_PREFIX = "bridge:chat_inbox:"       # STREAM per chat: messages TO chat (shared with sse.py)
 _CLEANUP_LOCK_KEY = "bridge:cleanup_lock"      # distributed lock for stale cleanup
+_BOT_GEN_PREFIX = "bridge:bot_gen:"            # STRING per token: monotonic generation counter
 
 _BOT_TTL = 30            # seconds before a bot is considered offline
 _HEARTBEAT_INTERVAL = 10 # how often each worker refreshes its heartbeat
@@ -55,6 +56,8 @@ class ConnectionBridge:
         self._worker_id = uuid.uuid4().hex[:12]
         # token -> bot WebSocket (process-local)
         self._bots: dict[str, WebSocket] = {}
+        # token -> generation counter (for cross-worker ownership)
+        self._bot_gens: dict[str, int] = {}
         # Redis client for cross-worker state
         self._redis = redis
         # Session persistence layer (MySQL + Redis cache)
@@ -73,20 +76,24 @@ class ConnectionBridge:
         logger.info("Bridge worker {} started", self._worker_id)
 
     async def _run_heartbeat(self) -> None:
-        """Periodically refresh bot heartbeats and compete for cleanup duty.
-
-        Dead-connection detection is delegated to Uvicorn's protocol-level
-        ws_ping_interval / ws_ping_timeout (~20 s).  This loop only refreshes
-        the Redis ZSET scores for locally connected bots and runs the
-        distributed stale-entry cleanup.
-        """
+        """Periodically refresh bot heartbeats and compete for cleanup duty."""
         while not self._shutting_down:
             try:
                 now = time.time()
 
+                # Cross-worker eviction: check if any local bot has been
+                # superseded by a newer generation on another worker.
+                for token, local_gen in list(self._bot_gens.items()):
+                    remote_gen_raw = await self._redis.get(f"{_BOT_GEN_PREFIX}{token}")
+                    if remote_gen_raw and int(remote_gen_raw) > local_gen:
+                        logger.info(
+                            "Heartbeat eviction: remote_gen={} > local_gen={} (worker={}, token={}...)",
+                            int(remote_gen_raw), local_gen,
+                            self._worker_id, token[:10],
+                        )
+                        await self._evict_local(token)
+
                 # Refresh ZSET scores for locally connected bots.
-                # ws_ping_timeout guarantees every bot in _bots is protocol-
-                # level alive, so using ``now`` as the score is accurate.
                 if self._bots:
                     mapping = {token: now for token in self._bots}
                     await self._redis.zadd(_BOT_ALIVE_KEY, mapping)
@@ -117,6 +124,7 @@ class ConnectionBridge:
             tok_str = tok if isinstance(tok, str) else tok.decode()
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{tok_str}")
             await self._cleanup_chat_inboxes(tok_str)
+            await self._redis.delete(f"{_BOT_GEN_PREFIX}{tok_str}")
 
         await self._redis.zremrangebyscore(_BOT_ALIVE_KEY, "-inf", cutoff)
         logger.info("Cleanup: removed {} expired bot(s)", len(expired))
@@ -130,64 +138,117 @@ class ConnectionBridge:
     # ── Bot registration (multi-worker safe) ─────────────────────────────────
 
     async def register_bot(self, token: str, ws: WebSocket) -> bool:
-        """Register a bot connection. Returns False if a live bot is already connected.
+        """Register a bot connection, evicting any existing holder.
 
-        Uses ZADD NX for atomic registration to prevent race conditions
-        between workers competing to register the same token.
+        Always returns True.  When another worker (or the same worker)
+        already holds this token, the old connection is evicted locally
+        and a monotonically-increasing generation counter in Redis lets
+        remote workers detect the takeover via poll-task self-check or
+        heartbeat sweep.
         """
+        # Same-worker eviction: close the old WS and clean up local state
         if token in self._bots:
-            logger.info("[bridge] reject duplicate bot (local): {}...", token[:10])
-            return False
+            await self._evict_local(token)
 
-        # Atomic: only succeeds if token is NOT already in the ZSET
-        added = await self._redis.zadd(
-            _BOT_ALIVE_KEY, {token: time.time()}, nx=True,
-        )
-        if not added:
-            # Another worker registered first, or stale heartbeat remains
-            score = await self._redis.zscore(_BOT_ALIVE_KEY, token)
-            if score is not None and (time.time() - score) < _BOT_TTL:
-                logger.info(
-                    "[bridge] reject duplicate bot (remote, age={:.1f}s): {}...",
-                    time.time() - score, token[:10],
-                )
-                return False
-            # Stale heartbeat expired — overwrite only if our timestamp is newer
-            await self._redis.zadd(_BOT_ALIVE_KEY, {token: time.time()}, gt=True)
+        # Atomically claim a new generation — higher gen always wins
+        gen = await self._redis.incr(f"{_BOT_GEN_PREFIX}{token}")
 
+        # Unconditionally update the ZSET heartbeat (no NX)
+        await self._redis.zadd(_BOT_ALIVE_KEY, {token: time.time()})
+
+        # Store in local dicts
         self._bots[token] = ws
+        self._bot_gens[token] = gen
+
         # Ensure consumer group exists and start consuming bot inbox
         inbox = f"{_BOT_INBOX_PREFIX}{token}"
         await self._queue.ensure_group(inbox, "bot")
         task_key = f"bot:{token}"
-        self._poll_tasks[task_key] = asyncio.create_task(self._poll_bot_inbox(token))
-        logger.info("Bot registered on worker {} (token={}...)", self._worker_id, token[:10])
+        old_task = self._poll_tasks.pop(task_key, None)
+        if old_task:
+            old_task.cancel()
+        self._poll_tasks[task_key] = asyncio.create_task(
+            self._poll_bot_inbox(token, gen)
+        )
+        logger.info("Bot registered on worker {} gen={} (token={}...)",
+                     self._worker_id, gen, token[:10])
         return True
 
-    async def unregister_bot(self, token: str, ws: WebSocket | None = None) -> None:
-        """Remove bot from local dict + clean up Redis and inboxes.
+    async def _evict_local(self, token: str) -> None:
+        """Evict a locally-held bot connection without touching Redis state.
 
-        When *ws* is provided, the cleanup is skipped if ``_bots[token]`` no
-        longer points to that same WebSocket instance — this prevents a stale
-        finally-block from accidentally destroying a newer connection that has
-        already re-registered under the same token.
+        Called when this worker needs to release a token — either for a
+        same-worker re-registration or in response to a cross-worker
+        generation takeover detected by the poll task or heartbeat.
+
+        Safe to call multiple times for the same token — the second call
+        is a no-op (guard: token not in _bots).
         """
-        current_ws = self._bots.get(token)
-        if ws is not None and current_ws is not ws:
-            # A newer connection already replaced this one; nothing to clean.
+        if token not in self._bots:
             return
-        self._bots.pop(token, None)
-        # Stop bot inbox consuming
+        ws = self._bots.pop(token, None)
+        self._bot_gens.pop(token, None)
+        # Cancel the poll task so the old consumer stops competing for messages.
+        # Skip cancel+await when the caller IS the poll task (e.g. _poll_bot_inbox
+        # self-eviction) to avoid awaiting the currently running task.
         task_key = f"bot:{token}"
         task = self._poll_tasks.pop(task_key, None)
-        if task:
+        if task and task is not asyncio.current_task():
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
-        # Notify BEFORE cleanup so the log reflects accurate state
+        if ws:
+            try:
+                await ws.close(code=Err.WS_EVICTED.status,
+                               reason=Err.WS_EVICTED.message)
+            except Exception:
+                pass
         self.notify_bot_disconnected(token)
+        logger.info("Evicted local bot (worker={}, token={}...)",
+                     self._worker_id, token[:10])
+
+    async def unregister_bot(self, token: str, ws: WebSocket | None = None) -> None:
+        """Remove bot from local dict + conditionally clean up Redis.
+
+        When *ws* is provided, the cleanup is skipped if ``_bots[token]``
+        no longer points to that same WebSocket instance (same-worker guard).
+
+        Before deleting Redis state (ZSET entry, inbox stream, chat inboxes),
+        we compare local generation with the remote generation counter.  If a
+        newer generation exists, Redis cleanup is skipped to avoid destroying
+        the new owner's state (cross-worker guard).
+        """
+        current_ws = self._bots.get(token)
+        if ws is not None and current_ws is not ws:
+            # A newer connection already replaced this one on the same worker.
+            return
+
+        local_gen = self._bot_gens.get(token)
+
+        # Local cleanup
+        self._bots.pop(token, None)
+        self._bot_gens.pop(token, None)
+        task_key = f"bot:{token}"
+        task = self._poll_tasks.pop(task_key, None)
+        if task and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self.notify_bot_disconnected(token)
+
+        # Cross-worker guard: skip Redis cleanup if a newer gen has taken over
+        remote_gen_raw = await self._redis.get(f"{_BOT_GEN_PREFIX}{token}")
+        remote_gen = int(remote_gen_raw) if remote_gen_raw else None
+        if remote_gen is not None and local_gen is not None and remote_gen > local_gen:
+            logger.info("Skip Redis cleanup: newer gen exists remote={} local={} (token={}...)",
+                         remote_gen, local_gen, token[:10])
+            return
+
+        # Safe to clean up Redis state
         await self._redis.zrem(_BOT_ALIVE_KEY, token)
         await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
         await self._cleanup_chat_inboxes(token)
@@ -201,7 +262,7 @@ class ConnectionBridge:
         if token in self._bots:
             bot_ws = self._bots[token]
             try:
-                await bot_ws.close(code=4003, reason="Token deleted")
+                await bot_ws.close(code=Err.WS_TOKEN_DELETED.status, reason=Err.WS_TOKEN_DELETED.message)
             except Exception:
                 logger.warning("Failed to close bot WebSocket during token removal (token={}...)", token[:10])
             await self.unregister_bot(token)
@@ -213,6 +274,7 @@ class ConnectionBridge:
             await self._redis.zrem(_BOT_ALIVE_KEY, token)
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
             await self._cleanup_chat_inboxes(token)
+            await self._redis.delete(f"{_BOT_GEN_PREFIX}{token}")
         logger.info("Bot sessions fully removed (token={}...)", token[:10])
 
     # ── Queries (read from Redis for cluster-wide view) ───────────────────────
@@ -388,8 +450,15 @@ class ConnectionBridge:
 
     # ── Per-connection inbox consuming ───────────────────────────────────────
 
-    async def _poll_bot_inbox(self, token: str) -> None:
-        """Consume bot_inbox:{token} via XREADGROUP and forward to the local bot WS."""
+    async def _poll_bot_inbox(self, token: str, gen: int = 0) -> None:
+        """Consume bot_inbox:{token} via XREADGROUP and forward to the local bot WS.
+
+        *gen* is the generation counter assigned during registration.
+        Each iteration checks whether a newer generation has appeared in
+        Redis; if so, the task evicts itself to stop consuming messages
+        that belong to the new owner.  When *gen* is 0 (rolling-update
+        compatibility with old callers), the check is skipped.
+        """
         inbox = f"{_BOT_INBOX_PREFIX}{token}"
         while not self._shutting_down:
             try:
@@ -397,23 +466,38 @@ class ConnectionBridge:
                     inbox, group="bot", consumer="bot",
                     block_ms=_CONSUME_BLOCK_MS,
                 )
+
+                # Cross-worker eviction self-check (≤5s detection)
+                if gen > 0:
+                    remote_gen_raw = await self._redis.get(f"{_BOT_GEN_PREFIX}{token}")
+                    if remote_gen_raw and int(remote_gen_raw) > gen:
+                        logger.info(
+                            "Poll task evicted: remote_gen={} > local_gen={} (token={}...)",
+                            int(remote_gen_raw), gen, token[:10],
+                        )
+                        await self._evict_local(token)
+                        break
+
                 if result is None:
-                    # XREADGROUP BLOCK normally waits at Redis level, but if the
-                    # call returns instantly (e.g. repeated NOGROUP recovery),
-                    # sleep 1s to prevent a tight CPU-burning loop.
                     await asyncio.sleep(1)
                     continue
+
                 msg_id, raw = result
                 data = json.loads(raw)
                 await self._queue.ack(inbox, "bot", msg_id)
-                # Handle disconnect command from admin token delete
+                # Handle disconnect command from admin token delete.
+                # Redis state is already cleaned by remove_bot_sessions (remote path),
+                # so only local state needs cleanup here.
                 if data.get("_disconnect"):
-                    bot_ws = self._bots.get(token)
+                    bot_ws = self._bots.pop(token, None)
+                    self._bot_gens.pop(token, None)
+                    self._poll_tasks.pop(f"bot:{token}", None)
                     if bot_ws:
                         try:
-                            await bot_ws.close(code=4003, reason="Token deleted")
+                            await bot_ws.close(code=Err.WS_TOKEN_DELETED.status, reason=Err.WS_TOKEN_DELETED.message)
                         except Exception:
                             logger.warning("Failed to close bot WebSocket on disconnect command (token={}...)", token[:10])
+                    self.notify_bot_disconnected(token)
                     logger.info("Inbox: received disconnect for bot (token={}...)", token[:10])
                     break
                 bot_ws = self._bots.get(token)
@@ -439,13 +523,15 @@ class ConnectionBridge:
         # Close bot connections and clean Redis
         for token, ws in list(self._bots.items()):
             try:
-                await ws.close(code=4000, reason="Server restarting")
+                await ws.close(code=Err.WS_SERVER_RESTART.status, reason=Err.WS_SERVER_RESTART.message)
             except Exception:
                 logger.debug("WebSocket close error during shutdown (ignored)")
             await self._redis.zrem(_BOT_ALIVE_KEY, token)
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
             await self._cleanup_chat_inboxes(token)
+            await self._redis.delete(f"{_BOT_GEN_PREFIX}{token}")
         self._bots.clear()
+        self._bot_gens.clear()
 
         # Cancel all polling tasks
         for task in self._poll_tasks.values():

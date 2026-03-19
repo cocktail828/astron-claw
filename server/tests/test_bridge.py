@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from services.bridge import ConnectionBridge
+from infra.errors import Err
 
 
 @pytest.fixture()
@@ -31,43 +32,38 @@ class TestRegisterBot:
         # Consume task should be created
         assert "bot:tok-1" in bridge._poll_tasks
 
-    async def test_register_bot_local_dup(self, bridge, mock_redis):
+    async def test_register_bot_local_dup_evicts_old(self, bridge, mock_redis, mock_queue):
+        """Re-registering same token on same worker evicts old WS and succeeds."""
         ws1, ws2 = AsyncMock(), AsyncMock()
-        mock_redis.zadd.return_value = 1
+        mock_redis.incr.side_effect = [1, 2]
         await bridge.register_bot("tok-1", ws1)
 
         result = await bridge.register_bot("tok-1", ws2)
-        assert result is False
-
-    async def test_register_bot_remote_alive(self, bridge, mock_redis):
-        """Reject registration when another worker has a live bot (ZADD NX fails + fresh score)."""
-        ws = AsyncMock()
-        mock_redis.zadd.return_value = 0  # ZADD NX fails — member exists
-        mock_redis.zscore.return_value = time.time() - 5  # fresh (within 30s)
-        result = await bridge.register_bot("tok-remote", ws)
-        assert result is False
-        assert "tok-remote" not in bridge._bots
-
-    async def test_register_bot_remote_expired(self, bridge, mock_redis, mock_queue):
-        """Allow registration when ZADD NX fails but existing heartbeat is stale."""
-        ws = AsyncMock()
-        # First zadd (NX) fails, second zadd (force overwrite) succeeds
-        mock_redis.zadd.side_effect = [0, 1]
-        mock_redis.zscore.return_value = time.time() - 60  # stale (>30s)
-        result = await bridge.register_bot("tok-stale", ws)
         assert result is True
-        assert "tok-stale" in bridge._bots
-        # ZADD called twice: first NX attempt, then force overwrite
-        assert mock_redis.zadd.await_count == 2
+        assert bridge._bots["tok-1"] is ws2
+        assert bridge._bot_gens["tok-1"] == 2
+        # Old WS should have been closed with 4005
+        ws1.close.assert_awaited_once_with(code=Err.WS_EVICTED.status, reason=Err.WS_EVICTED.message)
 
-    async def test_register_bot_atomic_prevents_race(self, bridge, mock_redis):
-        """When ZADD NX fails and score is fresh, second worker is rejected."""
+    async def test_register_bot_always_succeeds(self, bridge, mock_redis, mock_queue):
+        """Evict-on-reconnect: register_bot always returns True regardless of remote state."""
         ws = AsyncMock()
-        mock_redis.zadd.return_value = 0  # NX fails
-        mock_redis.zscore.return_value = time.time() - 1  # very fresh
-        result = await bridge.register_bot("tok-race", ws)
-        assert result is False
-        assert "tok-race" not in bridge._bots
+        mock_redis.incr.return_value = 5
+        result = await bridge.register_bot("tok-remote", ws)
+        assert result is True
+        assert "tok-remote" in bridge._bots
+        assert bridge._bot_gens["tok-remote"] == 5
+        mock_redis.incr.assert_awaited_once_with("bridge:bot_gen:tok-remote")
+        mock_redis.zadd.assert_awaited_once()
+
+    async def test_register_bot_increments_gen(self, bridge, mock_redis, mock_queue):
+        """Each register_bot call gets a unique generation via INCR."""
+        ws1, ws2 = AsyncMock(), AsyncMock()
+        mock_redis.incr.side_effect = [10, 11]
+        await bridge.register_bot("tok-gen", ws1)
+        assert bridge._bot_gens["tok-gen"] == 10
+        await bridge.register_bot("tok-gen", ws2)
+        assert bridge._bot_gens["tok-gen"] == 11
 
 
 class TestSendToBot:
@@ -354,13 +350,64 @@ class TestPollBotInbox:
         bridge._bots["tok-1"].send_json.assert_not_awaited()
         mock_queue.ack.assert_not_awaited()
 
+    async def test_self_evicts_on_higher_remote_gen(self, bridge, mock_redis, mock_queue):
+        """Poll task self-evicts when remote gen > local gen (cross-worker takeover)."""
+        bot_ws = AsyncMock()
+        bridge._bots["tok-1"] = bot_ws
+        bridge._bot_gens["tok-1"] = 3
+        bridge._poll_tasks["bot:tok-1"] = asyncio.current_task()  # simulate being the poll task
+
+        # consume returns None (no message), then gen check finds remote gen=5 > local gen=3
+        mock_redis.get.return_value = b"5"
+        mock_queue.consume.return_value = None
+
+        await bridge._poll_bot_inbox("tok-1", gen=3)
+
+        # Bot should be evicted: WS closed with 4005, removed from local dicts
+        bot_ws.close.assert_awaited_once_with(code=Err.WS_EVICTED.status, reason=Err.WS_EVICTED.message)
+        assert "tok-1" not in bridge._bots
+        assert "tok-1" not in bridge._bot_gens
+
+    async def test_evict_local_idempotent(self, bridge):
+        """Calling _evict_local twice for the same token is a safe no-op the second time."""
+        bot_ws = AsyncMock()
+        bridge._bots["tok-1"] = bot_ws
+        bridge._bot_gens["tok-1"] = 1
+
+        await bridge._evict_local("tok-1")
+        bot_ws.close.assert_awaited_once()
+
+        # Second call should be a no-op: no extra close, no extra notify
+        await bridge._evict_local("tok-1")
+        bot_ws.close.assert_awaited_once()  # still just once
+
+    async def test_disconnect_command_cleans_local_state(self, bridge, mock_redis, mock_queue):
+        """_disconnect command from admin token delete cleans up local dicts."""
+        bot_ws = AsyncMock()
+        bridge._bots["tok-1"] = bot_ws
+        bridge._bot_gens["tok-1"] = 3
+        bridge._poll_tasks["bot:tok-1"] = asyncio.current_task()
+
+        disconnect_payload = json.dumps({"_disconnect": True})
+        mock_queue.consume.return_value = ("1-0", disconnect_payload)
+
+        await bridge._poll_bot_inbox("tok-1", gen=3)
+
+        # Local state should be fully cleaned
+        assert "tok-1" not in bridge._bots
+        assert "tok-1" not in bridge._bot_gens
+        assert "bot:tok-1" not in bridge._poll_tasks
+        bot_ws.close.assert_awaited_once_with(code=Err.WS_TOKEN_DELETED.status, reason=Err.WS_TOKEN_DELETED.message)
+
 
 class TestUnregisterBot:
     async def test_unregister_cleans_redis_and_inboxes(self, bridge, mock_redis, mock_queue):
         ws = AsyncMock()
-        mock_redis.zadd.return_value = 1
+        mock_redis.incr.return_value = 1
         await bridge.register_bot("tok-1", ws)
 
+        # Remote gen matches local — safe to clean Redis
+        mock_redis.get.return_value = b"1"
         await bridge.unregister_bot("tok-1")
         assert "tok-1" not in bridge._bots
         mock_redis.zrem.assert_awaited_with("bridge:bot_alive", "tok-1")
@@ -369,7 +416,7 @@ class TestUnregisterBot:
 
 class TestCleanupExpiredBots:
     async def test_cleanup_removes_expired_bots(self, bridge, mock_redis, mock_queue):
-        """Expired bots' inboxes are deleted and entries removed from ZSET."""
+        """Expired bots' inboxes and gen keys are deleted, entries removed from ZSET."""
         mock_redis.zrangebyscore.return_value = ["tok-dead"]
 
         async def _scan_iter(**kwargs):
@@ -380,7 +427,9 @@ class TestCleanupExpiredBots:
         await bridge._cleanup_expired_bots(now)
 
         mock_queue.delete_queue.assert_awaited_with("bridge:bot_inbox:tok-dead")
-        mock_redis.delete.assert_awaited_with("bridge:chat_inbox:tok-dead:sid-1")
+        # Should clean up both the chat inbox and the gen key
+        mock_redis.delete.assert_any_await("bridge:chat_inbox:tok-dead:sid-1")
+        mock_redis.delete.assert_any_await("bridge:bot_gen:tok-dead")
         mock_redis.zremrangebyscore.assert_awaited_once()
 
     async def test_cleanup_noop_when_no_expired(self, bridge, mock_redis, mock_queue):
@@ -394,7 +443,10 @@ class TestHeartbeat:
     async def test_heartbeat_refreshes_local_bots(self, bridge, mock_redis):
         """Heartbeat ZADD refreshes scores for locally connected bots."""
         bridge._bots["tok-local"] = AsyncMock()
+        bridge._bot_gens["tok-local"] = 1
         mock_redis.set.return_value = False  # don't acquire lock
+        # gen check: remote gen == local gen (no eviction)
+        mock_redis.get.return_value = b"1"
 
         # Let one iteration run then stop
         original_sleep = asyncio.sleep
@@ -409,3 +461,23 @@ class TestHeartbeat:
         call_args = mock_redis.zadd.call_args
         assert call_args[0][0] == "bridge:bot_alive"
         assert "tok-local" in call_args[0][1]
+
+    async def test_heartbeat_evicts_on_higher_remote_gen(self, bridge, mock_redis):
+        """Heartbeat detects remote gen > local gen and evicts the local bot."""
+        bot_ws = AsyncMock()
+        bridge._bots["tok-stale"] = bot_ws
+        bridge._bot_gens["tok-stale"] = 2
+        mock_redis.set.return_value = False  # don't acquire cleanup lock
+        # Remote gen is higher — another worker took over
+        mock_redis.get.return_value = b"5"
+
+        async def _stop_after_one(_):
+            bridge._shutting_down = True
+
+        with patch("asyncio.sleep", side_effect=_stop_after_one):
+            await bridge._run_heartbeat()
+
+        # Bot should have been evicted with 4005
+        bot_ws.close.assert_awaited_once_with(code=Err.WS_EVICTED.status, reason=Err.WS_EVICTED.message)
+        assert "tok-stale" not in bridge._bots
+        assert "tok-stale" not in bridge._bot_gens
