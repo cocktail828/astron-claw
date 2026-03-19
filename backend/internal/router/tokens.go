@@ -1,32 +1,32 @@
 package router
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
 	"github.com/hygao1024/astron-claw/backend/internal/pkg"
 )
 
-var rateLimitScript = redis.NewScript(`
-local count = redis.call("INCR", KEYS[1])
-if count == 1 then
-    redis.call("EXPIRE", KEYS[1], ARGV[1])
-end
-return count
-`)
+// checkRateLimit increments a per-key counter and returns true if the limit is exceeded.
+// Uses plain INCR + EXPIRE instead of Lua scripts for Redis Cluster compatibility.
+func (app *App) checkRateLimit(c *gin.Context, key string, window time.Duration, limit int64) bool {
+	ctx := c.Request.Context()
+	count, err := app.RDB.Incr(ctx, key).Result()
+	if err != nil {
+		log.Warn().Err(err).Str("key", key).Msg("Rate limit INCR failed, allowing request")
+		return false
+	}
+	if count == 1 {
+		app.RDB.Expire(ctx, key, window)
+	}
+	return count > limit
+}
 
 func (app *App) createToken(c *gin.Context) {
 	// Rate limit: 10 requests per minute per IP
-	ip := c.ClientIP()
-	rateKey := "rate:create_token:" + ip
-	count, err := rateLimitScript.Run(c.Request.Context(), app.RDB, []string{rateKey}, 60).Int64()
-	if err != nil {
-		log.Error().Err(err).Msg("Rate limit check failed")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
-		return
-	}
-	if count > 10 {
+	if app.checkRateLimit(c, "rate:create_token:"+c.ClientIP(), 60*time.Second, 10) {
 		c.JSON(429, gin.H{"code": 429, "error": "Too many requests. Please try again later."})
 		return
 	}
@@ -43,15 +43,7 @@ func (app *App) createToken(c *gin.Context) {
 
 func (app *App) validateToken(c *gin.Context) {
 	// Rate limit: 20 requests per minute per IP
-	ip := c.ClientIP()
-	rateKey := "rate:validate_token:" + ip
-	count, err := rateLimitScript.Run(c.Request.Context(), app.RDB, []string{rateKey}, 60).Int64()
-	if err != nil {
-		log.Error().Err(err).Msg("Rate limit check failed")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
-		return
-	}
-	if count > 20 {
+	if app.checkRateLimit(c, "rate:validate_token:"+c.ClientIP(), 60*time.Second, 20) {
 		c.JSON(429, gin.H{"code": 429, "error": "Too many requests. Please try again later."})
 		return
 	}
