@@ -29,7 +29,14 @@ export function monitorBridgeProvider(account: ResolvedAccount, abortSignal?: Ab
       },
       onClose: () => {
         logger.warn("Bridge disconnected");
-        recordChannelRuntimeState(account.accountId, { running: false });
+        // Only mark running=false when the client will NOT reconnect on its own
+        // (auth failure, eviction, or intentional stop).  Otherwise the framework
+        // sees running=false, calls startAccount → new BridgeClient, while the
+        // old client's _scheduleReconnect is also running → two connections →
+        // eviction ping-pong.
+        if (bridgeClient.closing || bridgeClient.authFailed || bridgeClient.evicted) {
+          recordChannelRuntimeState(account.accountId, { running: false });
+        }
       },
     });
 

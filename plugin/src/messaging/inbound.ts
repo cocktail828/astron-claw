@@ -349,7 +349,10 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   // Dispatch through the OpenClaw SDK using onPartialReply for token-level streaming.
   // onPartialReply receives cumulative text on each token; we compute the delta
   // and send only the new portion as a chunk (same approach as adp-openclaw).
-  activeSessionCtx.set(sessionKey, { bridgeClient, sessionId });
+  // Use per-request context key to prevent concurrent dispatches from overwriting
+  // each other's session context. The requestId suffix ensures uniqueness.
+  const ctxKey = `${sessionKey}:${requestId ?? randomUUID()}`;
+  activeSessionCtx.set(ctxKey, { bridgeClient, sessionId });
   try {
     if (rt.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
       await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
@@ -439,10 +442,10 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       error: { code: -32000, message: String(err) },
     });
   } finally {
-    activeSessionCtx.delete(sessionKey);
-    // Sweep any leaked _pendingToolCtx entries for this session
+    activeSessionCtx.delete(ctxKey);
+    // Sweep any leaked _pendingToolCtx entries for this request
     for (const [k, v] of pendingToolCtx) {
-      if (v._sk === sessionKey) pendingToolCtx.delete(k);
+      if (v._sk === ctxKey) pendingToolCtx.delete(k);
     }
   }
 }

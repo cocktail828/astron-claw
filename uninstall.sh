@@ -138,6 +138,29 @@ if [ "$HAS_OPENCLAW" = "1" ]; then
     "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
     # Also clean up legacy channels path if present
     "$OPENCLAW_BIN" config set "channels.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
+    # Remove plugin from plugins.allow trust list
+    if command -v node >/dev/null 2>&1; then
+      log "removing plugin from plugins.allow trust list"
+      OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}" PLUGIN_NAME="$PLUGIN_NAME" OPENCLAW_BIN="$OPENCLAW_BIN" node -e "
+        const fs = require('fs');
+        const { execFileSync } = require('child_process');
+        const cfgPath = process.env.OPENCLAW_CONFIG_PATH;
+        const pluginName = process.env.PLUGIN_NAME;
+        const cliBin = process.env.OPENCLAW_BIN;
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const allow = (cfg.plugins && cfg.plugins.allow) || [];
+        const filtered = allow.filter(n => n !== pluginName);
+        try {
+          execFileSync(cliBin, ['config', 'set', 'plugins.allow', '--json', JSON.stringify(filtered)], { stdio: 'ignore' });
+        } catch {
+          if (!cfg.plugins) cfg.plugins = {};
+          cfg.plugins.allow = filtered;
+          fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+        }
+      " </dev/null 2>/dev/null || log "warning: failed to update plugins.allow (non-fatal)"
+    else
+      log "warning: node not found, skipping plugins.allow cleanup"
+    fi
   else
     log "keeping config (--keep-config)"
   fi
