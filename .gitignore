@@ -10,4 +10,5 @@ PLAN.md
 .venv/
 server/media/
 web/dist/
+*.tsbuildinfo
 probe/probe
