@@ -10,7 +10,7 @@ func TestLoad_Defaults(t *testing.T) {
 	// Clear env to test defaults
 	envKeys := []string{
 		"MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE",
-		"REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB", "REDIS_CLUSTER",
+		"REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB", "REDIS_ADDRS",
 		"SERVER_HOST", "SERVER_PORT", "SERVER_LOG_LEVEL",
 		"QUEUE_TYPE", "QUEUE_MAX_STREAM_LEN",
 		"OSS_TYPE", "OSS_ENDPOINT", "OSS_PUBLIC_ENDPOINT", "OSS_ACCESS_KEY", "OSS_SECRET_KEY", "OSS_BUCKET",
@@ -43,8 +43,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Redis.Host != "127.0.0.1" {
 		t.Errorf("Redis.Host = %q, want 127.0.0.1", cfg.Redis.Host)
 	}
-	if cfg.Redis.Cluster {
-		t.Error("Redis.Cluster should default to false")
+	if cfg.Redis.IsCluster() {
+		t.Error("Redis should default to standalone (not cluster)")
 	}
 	if cfg.Server.Port != 8765 {
 		t.Errorf("Server.Port = %d, want 8765", cfg.Server.Port)
@@ -69,13 +69,13 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_EnvOverrides(t *testing.T) {
 	os.Setenv("MYSQL_HOST", "db.example.com")
 	os.Setenv("MYSQL_PORT", "3307")
-	os.Setenv("REDIS_CLUSTER", "true")
+	os.Setenv("REDIS_ADDRS", "10.0.0.1:6379,10.0.0.2:6379")
 	os.Setenv("SERVER_PORT", "9999")
 	os.Setenv("CORS_ORIGINS", "http://a.com, http://b.com")
 	defer func() {
 		os.Unsetenv("MYSQL_HOST")
 		os.Unsetenv("MYSQL_PORT")
-		os.Unsetenv("REDIS_CLUSTER")
+		os.Unsetenv("REDIS_ADDRS")
 		os.Unsetenv("SERVER_PORT")
 		os.Unsetenv("CORS_ORIGINS")
 	}()
@@ -88,8 +88,11 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	if cfg.MySQL.Port != 3307 {
 		t.Errorf("MySQL.Port = %d, want 3307", cfg.MySQL.Port)
 	}
-	if !cfg.Redis.Cluster {
-		t.Error("Redis.Cluster should be true")
+	if !cfg.Redis.IsCluster() {
+		t.Error("Redis should be cluster mode when multiple REDIS_ADDRS provided")
+	}
+	if len(cfg.Redis.Addrs) != 2 || cfg.Redis.Addrs[0] != "10.0.0.1:6379" || cfg.Redis.Addrs[1] != "10.0.0.2:6379" {
+		t.Errorf("Redis.Addrs = %v, want [10.0.0.1:6379 10.0.0.2:6379]", cfg.Redis.Addrs)
 	}
 	if cfg.Server.Port != 9999 {
 		t.Errorf("Server.Port = %d, want 9999", cfg.Server.Port)

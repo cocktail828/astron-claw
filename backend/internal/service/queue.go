@@ -124,18 +124,6 @@ func (q *RedisStreamQueue) Purge(ctx context.Context, queueName string) error {
 }
 
 func (q *RedisStreamQueue) EnsureGroup(ctx context.Context, queueName, group string) error {
-	// Ensure stream key exists
-	exists, _ := q.rdb.Exists(ctx, queueName).Result()
-	if exists == 0 {
-		entryID, err := q.rdb.XAdd(ctx, &redis.XAddArgs{
-			Stream: queueName,
-			Values: map[string]interface{}{"_init": "1"},
-		}).Result()
-		if err == nil {
-			q.rdb.XDel(ctx, queueName, entryID)
-		}
-	}
-
 	err := q.rdb.XGroupCreateMkStream(ctx, queueName, group, "$").Err()
 	if err != nil {
 		errMsg := err.Error()

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,15 +41,86 @@ func (app *App) listTokens(c *gin.Context) {
 		pageSize = 100
 	}
 
-	// Cap at 5000 — in-memory merge with bot status requires all records loaded
-	data, err := app.TokenMgr.ListAll(ctx, 1, 5000, search)
+	// bot_online sort is handled in-memory since it requires Redis data;
+	// for created_at/name sort, push to DB directly.
+	if sortBy == "bot_online" {
+		app.listTokensWithBotSort(c, ctx, page, pageSize, search, sortOrder, botStatus)
+		return
+	}
+
+	data, err := app.TokenMgr.ListPaged(ctx, page, pageSize, search, sortBy, sortOrder)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list tokens")
 		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
 		return
 	}
 
-	connections := app.Bridge.GetConnectionsSummary(ctx)
+	// Collect raw tokens for bulk online check
+	rawTokens := make([]string, len(data.Items))
+	for i, t := range data.Items {
+		rawTokens[i] = t.Token
+	}
+	onlineMap, _ := app.TokenMgr.BulkCheckBotOnline(ctx, rawTokens)
+
+	type tokenInfo struct {
+		Token     string  `json:"token"`
+		Name      string  `json:"name"`
+		CreatedAt float64 `json:"created_at"`
+		ExpiresAt float64 `json:"expires_at"`
+		BotOnline bool    `json:"bot_online"`
+	}
+
+	pageItems := make([]tokenInfo, len(data.Items))
+	for i, t := range data.Items {
+		pageItems[i] = tokenInfo{
+			Token:     maskToken(t.Token),
+			Name:      t.Name,
+			CreatedAt: t.CreatedAt,
+			ExpiresAt: t.ExpiresAt,
+			BotOnline: onlineMap[t.Token],
+		}
+	}
+
+	// Filter by bot status (post-query filter — only applies to current page)
+	if botStatus == "online" {
+		var filtered []tokenInfo
+		for _, t := range pageItems {
+			if t.BotOnline {
+				filtered = append(filtered, t)
+			}
+		}
+		pageItems = filtered
+	}
+
+	globalOnline := app.TokenMgr.CountOnlineBots(ctx)
+	totalTokens := app.TokenMgr.CountAllActive(ctx)
+
+	c.JSON(200, gin.H{
+		"code":         0,
+		"tokens":       pageItems,
+		"total":        data.Total,
+		"page":         page,
+		"page_size":    pageSize,
+		"online_bots":  globalOnline,
+		"total_tokens": totalTokens,
+	})
+}
+
+// listTokensWithBotSort handles the special case of sorting by bot_online status.
+// This requires loading all tokens to merge with Redis data.
+func (app *App) listTokensWithBotSort(c *gin.Context, ctx context.Context, page, pageSize int, search, sortOrder, botStatus string) {
+	data, err := app.TokenMgr.ListPaged(ctx, 1, 5000, search, "created_at", "desc")
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to list tokens for bot sort")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		return
+	}
+
+	rawTokens := make([]string, len(data.Items))
+	for i, t := range data.Items {
+		rawTokens[i] = t.Token
+	}
+	onlineMap, _ := app.TokenMgr.BulkCheckBotOnline(ctx, rawTokens)
 
 	type tokenInfo struct {
 		Token     string  `json:"token"`
@@ -65,11 +137,10 @@ func (app *App) listTokens(c *gin.Context) {
 			Name:      t.Name,
 			CreatedAt: t.CreatedAt,
 			ExpiresAt: t.ExpiresAt,
-			BotOnline: connections[t.Token],
+			BotOnline: onlineMap[t.Token],
 		}
 	}
 
-	// Global stats
 	globalOnline := 0
 	for _, t := range allTokens {
 		if t.BotOnline {
@@ -77,7 +148,6 @@ func (app *App) listTokens(c *gin.Context) {
 		}
 	}
 
-	// Filter by bot status
 	filtered := allTokens
 	if botStatus == "online" {
 		var f []tokenInfo
@@ -89,31 +159,20 @@ func (app *App) listTokens(c *gin.Context) {
 		filtered = f
 	}
 
-	// Sort
 	reverse := sortOrder == "desc"
-	if sortBy == "bot_online" {
-		sort.Slice(filtered, func(i, j int) bool {
-			if filtered[i].BotOnline != filtered[j].BotOnline {
-				if reverse {
-					return filtered[i].BotOnline
-				}
-				return filtered[j].BotOnline
-			}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].BotOnline != filtered[j].BotOnline {
 			if reverse {
-				return filtered[i].CreatedAt > filtered[j].CreatedAt
+				return filtered[i].BotOnline
 			}
-			return filtered[i].CreatedAt < filtered[j].CreatedAt
-		})
-	} else {
-		sort.Slice(filtered, func(i, j int) bool {
-			if reverse {
-				return filtered[i].CreatedAt > filtered[j].CreatedAt
-			}
-			return filtered[i].CreatedAt < filtered[j].CreatedAt
-		})
-	}
+			return filtered[j].BotOnline
+		}
+		if reverse {
+			return filtered[i].CreatedAt > filtered[j].CreatedAt
+		}
+		return filtered[i].CreatedAt < filtered[j].CreatedAt
+	})
 
-	// Paginate
 	total := len(filtered)
 	offset := (page - 1) * pageSize
 	end := offset + pageSize

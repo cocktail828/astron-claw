@@ -26,6 +26,7 @@ var (
 	// Chat / SSE
 	ErrChatEmptyMessage  = AppError{http.StatusBadRequest, "Empty message"}
 	ErrChatNoBot         = AppError{http.StatusBadRequest, "No bot connected"}
+	ErrChatInvalidReq    = AppError{http.StatusBadRequest, "Invalid request"}
 	ErrChatSendFailed    = AppError{http.StatusInternalServerError, "Failed to send message to bot"}
 	ErrChatStreamTimeout = AppError{0, "Stream timeout"}
 	ErrChatInternalError = AppError{0, "Internal server error"}

@@ -16,7 +16,7 @@ import (
 
 var validDBName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
-func InitDB(cfg config.MysqlConfig) (*gorm.DB, error) {
+func InitDB(cfg config.MysqlConfig, pool config.DBPoolConfig) (*gorm.DB, error) {
 	// Ensure database exists
 	if err := ensureDatabase(cfg); err != nil {
 		return nil, fmt.Errorf("ensure database: %w", err)
@@ -34,9 +34,9 @@ func InitDB(cfg config.MysqlConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("get sql.DB: %w", err)
 	}
 
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(15)
-	sqlDB.SetConnMaxLifetime(3600 * time.Second)
+	sqlDB.SetMaxIdleConns(pool.MaxIdleConns)
+	sqlDB.SetMaxOpenConns(pool.MaxOpenConns)
+	sqlDB.SetConnMaxLifetime(time.Duration(pool.ConnMaxLifetime) * time.Second)
 
 	// Verify connectivity
 	if err := sqlDB.Ping(); err != nil {

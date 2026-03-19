@@ -159,6 +159,98 @@ func (m *TokenManager) ListAll(ctx context.Context, page, pageSize int, search s
 	}, nil
 }
 
+// ListPaged returns a paginated list of non-expired tokens with DB-level sort and pagination.
+// sortBy must be one of: "created_at", "name". sortOrder must be "asc" or "desc".
+func (m *TokenManager) ListPaged(ctx context.Context, page, pageSize int, search, sortBy, sortOrder string) (*TokenListResult, error) {
+	now := time.Now().UTC()
+	query := m.db.WithContext(ctx).Model(&model.Token{}).Where("expires_at >= ?", now)
+	if search != "" {
+		escaped := strings.NewReplacer("%", "\\%", "_", "\\_").Replace(search)
+		query = query.Where("token LIKE ?", "%"+escaped+"%")
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	// Validate and apply sort
+	orderCol := "created_at"
+	if sortBy == "name" {
+		orderCol = "name"
+	}
+	direction := "DESC"
+	if sortOrder == "asc" {
+		direction = "ASC"
+	}
+	orderClause := orderCol + " " + direction
+
+	var rows []model.Token
+	offset := (page - 1) * pageSize
+	if err := query.Order(orderClause).Limit(pageSize).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	items := make([]TokenItem, len(rows))
+	for i, row := range rows {
+		items[i] = TokenItem{
+			Token:     row.Token,
+			CreatedAt: toTimestamp(row.CreatedAt),
+			Name:      row.Name,
+			ExpiresAt: toTimestamp(row.ExpiresAt),
+		}
+	}
+
+	return &TokenListResult{
+		Items:    items,
+		Total:    int(total),
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}
+
+// BulkCheckBotOnline checks online status for multiple tokens using Pipeline ZScore.
+func (m *TokenManager) BulkCheckBotOnline(ctx context.Context, tokens []string) (map[string]bool, error) {
+	if len(tokens) == 0 {
+		return make(map[string]bool), nil
+	}
+	cutoff := float64(time.Now().Unix()) - 30 // BotTTL = 30s
+
+	pipe := m.rdb.Pipeline()
+	cmds := make([]*redis.FloatCmd, len(tokens))
+	for i, token := range tokens {
+		cmds[i] = pipe.ZScore(ctx, "bridge:bot_alive", token)
+	}
+	_, _ = pipe.Exec(ctx) // individual cmds carry their own errors
+
+	result := make(map[string]bool, len(tokens))
+	for i, cmd := range cmds {
+		score, err := cmd.Result()
+		if err == nil && score > cutoff {
+			result[tokens[i]] = true
+		}
+	}
+	return result, nil
+}
+
+// CountOnlineBots returns the total number of online bots.
+func (m *TokenManager) CountOnlineBots(ctx context.Context) int {
+	cutoff := float64(time.Now().Unix()) - 30 // BotTTL = 30s
+	count, err := m.rdb.ZCount(ctx, "bridge:bot_alive", fmt.Sprintf("%f", cutoff), "+inf").Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to count online bots")
+		return 0
+	}
+	return int(count)
+}
+
+// CountAllActive returns the total number of non-expired tokens.
+func (m *TokenManager) CountAllActive(ctx context.Context) int {
+	var count int64
+	m.db.WithContext(ctx).Model(&model.Token{}).Where("expires_at >= ?", time.Now().UTC()).Count(&count)
+	return int(count)
+}
+
 // CleanupExpired removes all expired tokens and returns the count.
 func (m *TokenManager) CleanupExpired(ctx context.Context) (int, error) {
 	result := m.db.WithContext(ctx).Where("expires_at < ?", time.Now().UTC()).Delete(&model.Token{})

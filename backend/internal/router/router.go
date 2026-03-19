@@ -32,6 +32,9 @@ func SetupRouter(app *App) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
+	// Global body size limit (32 MB)
+	r.MaxMultipartMemory = 32 << 20
+
 	// CORS middleware
 	r.Use(middleware.CORSMiddleware(app.Config.CORS))
 

@@ -42,6 +42,20 @@ func (app *App) createToken(c *gin.Context) {
 }
 
 func (app *App) validateToken(c *gin.Context) {
+	// Rate limit: 20 requests per minute per IP
+	ip := c.ClientIP()
+	rateKey := "rate:validate_token:" + ip
+	count, err := rateLimitScript.Run(c.Request.Context(), app.RDB, []string{rateKey}, 60).Int64()
+	if err != nil {
+		log.Error().Err(err).Msg("Rate limit check failed")
+		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		return
+	}
+	if count > 20 {
+		c.JSON(429, gin.H{"code": 429, "error": "Too many requests. Please try again later."})
+		return
+	}
+
 	var body struct {
 		Token string `json:"token"`
 	}

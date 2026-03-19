@@ -42,20 +42,25 @@ func (app *App) chatSSE(c *gin.Context) {
 	tokenStr := c.GetString("token")
 	tp := telemetry.TokenPrefix(tokenStr)
 
-	var body ChatRequest
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"code": 400, "error": "Invalid request"})
-		return
-	}
-
-	recordReq := func(status string, code int) {
+	reqStatus := "success"
+	reqCode := 200
+	recordReq := func() {
 		attrs := metric.WithAttributeSet(attribute.NewSet(
-			attribute.String("status", status),
-			attribute.String("code", strconv.Itoa(code)),
+			attribute.String("status", reqStatus),
+			attribute.String("code", strconv.Itoa(reqCode)),
 			attribute.String("token_prefix", tp),
 		))
 		telemetry.ChatRequestTotal.Add(context.Background(), 1, attrs)
 		telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(), attrs)
+	}
+	defer recordReq()
+
+	var body ChatRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		reqStatus = "bad_request"
+		reqCode = 400
+		model.ErrorResponse(c, model.ErrChatInvalidReq)
+		return
 	}
 
 	// Validate media
@@ -64,7 +69,8 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	if len(body.Media) > 10 {
 		log.Warn().Str("token", tp).Msg("SSE: bad request — too many media items")
-		recordReq("bad_request", 400)
+		reqStatus = "bad_request"
+		reqCode = 400
 		model.ErrorResponse(c, model.ErrMediaTooMany)
 		return
 	}
@@ -75,7 +81,8 @@ func (app *App) chatSSE(c *gin.Context) {
 				if !strings.HasPrefix(item.Content, "http://") && !strings.HasPrefix(item.Content, "https://") {
 					log.Warn().Str("url", item.Content).Str("token", tp).
 						Msg("SSE: bad request — invalid media URL scheme")
-					recordReq("bad_request", 400)
+					reqStatus = "bad_request"
+					reqCode = 400
 					model.ErrorResponse(c, model.ErrMediaBadURLScheme)
 					return
 				}
@@ -83,7 +90,8 @@ func (app *App) chatSSE(c *gin.Context) {
 			} else {
 				log.Warn().Str("type", item.Type).Str("token", tp).
 					Msg("SSE: bad request — unsupported media type")
-				recordReq("bad_request", 400)
+				reqStatus = "bad_request"
+				reqCode = 400
 				model.ErrorResponse(c, model.ErrMediaUnsupportedType)
 				return
 			}
@@ -92,7 +100,8 @@ func (app *App) chatSSE(c *gin.Context) {
 
 	if content == "" && len(mediaURLs) == 0 {
 		log.Warn().Str("token", tp).Msg("SSE: bad request — empty message")
-		recordReq("bad_request", 400)
+		reqStatus = "bad_request"
+		reqCode = 400
 		model.ErrorResponse(c, model.ErrChatEmptyMessage)
 		return
 	}
@@ -101,7 +110,8 @@ func (app *App) chatSSE(c *gin.Context) {
 	ctx := c.Request.Context()
 	if !app.Bridge.IsBotConnected(ctx, tokenStr) {
 		log.Warn().Str("token", tp).Msg("SSE: no bot connected")
-		recordReq("no_bot", 400)
+		reqStatus = "no_bot"
+		reqCode = 400
 		model.ErrorResponse(c, model.ErrChatNoBot)
 		return
 	}
@@ -114,7 +124,8 @@ func (app *App) chatSSE(c *gin.Context) {
 		if !found {
 			log.Warn().Str("session", *body.SessionID).Str("token", tp).
 				Msg("SSE: session not found")
-			recordReq("session_not_found", 404)
+			reqStatus = "session_not_found"
+			reqCode = 404
 			model.ErrorResponse(c, model.ErrSessionNotFound)
 			return
 		}
@@ -125,7 +136,8 @@ func (app *App) chatSSE(c *gin.Context) {
 		sessionID, sessionNumber, err = app.Bridge.CreateSession(ctx, tokenStr)
 		if err != nil {
 			log.Error().Err(err).Str("token", tp).Msg("SSE: failed to create session")
-			recordReq("error", 500)
+			reqStatus = "error"
+			reqCode = 500
 			c.JSON(500, gin.H{"code": 500, "error": "Failed to create session"})
 			return
 		}
@@ -141,13 +153,13 @@ func (app *App) chatSSE(c *gin.Context) {
 	reqID, err := app.Bridge.SendToBot(ctx, tokenStr, content, mediaURLs, sessionID)
 	if err != nil {
 		log.Error().Err(err).Str("token", tp).Msg("SSE: send_to_bot failed")
-		recordReq("send_fail", 500)
+		reqStatus = "send_fail"
+		reqCode = 500
 		model.ErrorResponse(c, model.ErrChatSendFailed)
 		return
 	}
 
 	// Success — entering SSE stream
-	recordReq("success", 200)
 
 	log.Info().Str("req", reqID).Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", tp).
 		Msg("SSE: chat started")

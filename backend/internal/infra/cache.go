@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -18,14 +19,18 @@ func InitRedis(cfg config.RedisConfig) (redis.UniversalClient, error) {
 
 	var rdb redis.UniversalClient
 
-	if cfg.Cluster {
+	if cfg.IsCluster() {
 		rdb = redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs:    []string{cfg.Host + ":" + strconv.Itoa(cfg.Port)},
+			Addrs:    cfg.Addrs,
 			Password: cfg.Password,
 		})
 	} else {
+		addr := cfg.Host + ":" + strconv.Itoa(cfg.Port)
+		if len(cfg.Addrs) == 1 {
+			addr = cfg.Addrs[0]
+		}
 		rdb = redis.NewClient(&redis.Options{
-			Addr:     cfg.Host + ":" + strconv.Itoa(cfg.Port),
+			Addr:     addr,
 			Password: cfg.Password,
 			DB:       cfg.DB,
 		})
@@ -36,13 +41,17 @@ func InitRedis(cfg config.RedisConfig) (redis.UniversalClient, error) {
 	}
 
 	mode := "standalone"
-	if cfg.Cluster {
+	addr := cfg.Host + ":" + strconv.Itoa(cfg.Port)
+	if cfg.IsCluster() {
 		mode = "cluster"
+		addr = strings.Join(cfg.Addrs, ",")
+	} else if len(cfg.Addrs) == 1 {
+		addr = cfg.Addrs[0]
 	}
 
 	log.Info().
 		Str("mode", mode).
-		Str("addr", cfg.Host+":"+strconv.Itoa(cfg.Port)).
+		Str("addr", addr).
 		Msg("Redis connected")
 
 	return rdb, nil

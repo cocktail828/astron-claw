@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 )
 
 func escapeLabel(v string) string {
@@ -83,10 +84,16 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 	var lines []string
 
 	// Load resource info
-	serviceName, _ := rdb.HGet(ctx, KeyResource, "service.name").Result()
+	serviceName, err := rdb.HGet(ctx, KeyResource, "service.name").Result()
+	if err != nil && err != redis.Nil {
+		log.Warn().Err(err).Msg("telemetry: failed to read resource info")
+	}
 
 	// Load metadata
-	metaRaw, _ := rdb.HGetAll(ctx, KeyMeta).Result()
+	metaRaw, err := rdb.HGetAll(ctx, KeyMeta).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("telemetry: failed to read metadata")
+	}
 	meta := make(map[string]map[string]string)
 	for k, v := range metaRaw {
 		var m map[string]string
@@ -96,7 +103,10 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 	}
 
 	// Counters
-	countersRaw, _ := rdb.HGetAll(ctx, KeyCounters).Result()
+	countersRaw, err := rdb.HGetAll(ctx, KeyCounters).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("telemetry: failed to read counters")
+	}
 	counterGroups := make(map[string][]struct {
 		attrs map[string]string
 		value float64
@@ -127,7 +137,10 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 	}
 
 	// Histograms
-	histRaw, _ := rdb.HGetAll(ctx, KeyHistograms).Result()
+	histRaw, err := rdb.HGetAll(ctx, KeyHistograms).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("telemetry: failed to read histograms")
+	}
 	type histEntry struct {
 		suffixes map[string]float64
 	}
@@ -212,13 +225,19 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 	}
 
 	// Gauges
-	gaugePIDs, _ := rdb.SMembers(ctx, KeyGaugePIDs).Result()
+	gaugePIDs, err := rdb.SMembers(ctx, KeyGaugePIDs).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("telemetry: failed to read gauge PIDs")
+	}
 	gaugeAgg := make(map[string]float64)
 	var deadPIDs []string
 
 	for _, pid := range gaugePIDs {
 		gk := GaugeKey(pid)
-		fields, _ := rdb.HGetAll(ctx, gk).Result()
+		fields, err := rdb.HGetAll(ctx, gk).Result()
+		if err != nil {
+			log.Warn().Err(err).Str("pid", pid).Msg("telemetry: failed to read gauge data")
+		}
 		if len(fields) == 0 {
 			deadPIDs = append(deadPIDs, pid)
 			continue
@@ -265,7 +284,10 @@ func RenderPrometheusExposition(ctx context.Context, rdb redis.UniversalClient) 
 // ResetAllMetrics deletes all OTLP metric keys from Redis.
 func ResetAllMetrics(ctx context.Context, rdb redis.UniversalClient) error {
 	keys := []string{KeyCounters, KeyHistograms, KeyMeta, KeyResource}
-	pids, _ := rdb.SMembers(ctx, KeyGaugePIDs).Result()
+	pids, err := rdb.SMembers(ctx, KeyGaugePIDs).Result()
+	if err != nil {
+		log.Warn().Err(err).Msg("telemetry: failed to read gauge PIDs for reset")
+	}
 	for _, pid := range pids {
 		keys = append(keys, GaugeKey(pid))
 	}

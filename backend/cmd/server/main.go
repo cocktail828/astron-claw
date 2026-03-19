@@ -27,7 +27,7 @@ func main() {
 	infra.SetupLogger(cfg.Server.LogLevel)
 
 	// Initialize MySQL
-	db, err := infra.InitDB(cfg.MySQL)
+	db, err := infra.InitDB(cfg.MySQL, cfg.DBPool)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialise MySQL")
 	}

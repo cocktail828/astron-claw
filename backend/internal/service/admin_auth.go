@@ -170,10 +170,19 @@ func (a *AdminAuth) invalidateAllSessions(ctx context.Context) {
 		log.Warn().Err(err).Msg("Failed to read admin session index for invalidation")
 		return
 	}
-	for _, token := range tokens {
-		a.rdb.Del(ctx, adminSessionPrefix+token)
+	if len(tokens) > 0 {
+		pipe := a.rdb.Pipeline()
+		for _, token := range tokens {
+			pipe.Del(ctx, adminSessionPrefix+token)
+		}
+		pipe.Del(ctx, adminSessionIdx)
+		if _, err := pipe.Exec(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to pipeline-delete admin sessions")
+			return
+		}
+	} else {
+		a.rdb.Del(ctx, adminSessionIdx)
 	}
-	a.rdb.Del(ctx, adminSessionIdx)
 	log.Info().Msg("All admin sessions invalidated")
 }
 

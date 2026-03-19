@@ -191,6 +191,10 @@ func (b *ConnectionBridge) cleanupChatInboxes(ctx context.Context, token string)
 		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Error reading chat inbox index")
 		return
 	}
+	if len(keys) > 0 {
+		log.Warn().Int("orphan_inboxes", len(keys)).Str("token", pkg.SafePrefix(token, 10)).
+			Msg("Cleaning up orphan chat inboxes")
+	}
 	for _, k := range keys {
 		b.rdb.Del(ctx, k)
 	}
@@ -564,7 +568,11 @@ func (b *ConnectionBridge) pollBotInbox(ctx context.Context, token string, gen i
 		if err != nil {
 			if !b.shuttingDown.Load() {
 				log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot inbox consume error")
-				time.Sleep(1 * time.Second)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(1 * time.Second):
+				}
 			}
 			continue
 		}

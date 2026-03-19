@@ -56,7 +56,18 @@ type RedisConfig struct {
 	Port     int
 	Password string
 	DB       int
-	Cluster  bool
+	Addrs    []string // Node addresses (comma-separated via REDIS_ADDRS); >1 means cluster mode
+}
+
+// IsCluster returns true when multiple Redis addresses are configured.
+func (c RedisConfig) IsCluster() bool {
+	return len(c.Addrs) > 1
+}
+
+type DBPoolConfig struct {
+	MaxIdleConns    int
+	MaxOpenConns    int
+	ConnMaxLifetime int // seconds
 }
 
 type ServerConfig struct {
@@ -110,6 +121,7 @@ type AppConfig struct {
 	Storage StorageConfig
 	OTLP    OtlpConfig
 	CORS    CorsConfig
+	DBPool  DBPoolConfig
 }
 
 var validOSSTypes = map[string]bool{"s3": true, "ifly_gateway": true}
@@ -141,7 +153,7 @@ func Load() *AppConfig {
 			Port:     getEnvInt("REDIS_PORT", 6379),
 			Password: getEnv("REDIS_PASSWORD", ""),
 			DB:       getEnvInt("REDIS_DB", 0),
-			Cluster:  getEnvBool("REDIS_CLUSTER", false),
+			Addrs:    splitCSV(getEnv("REDIS_ADDRS", "")),
 		},
 		Server: ServerConfig{
 			Host:           getEnv("SERVER_HOST", "0.0.0.0"),
@@ -180,6 +192,11 @@ func Load() *AppConfig {
 		CORS: CorsConfig{
 			Origins: splitCSV(getEnv("CORS_ORIGINS", "*")),
 			Enabled: getEnvBool("CORS_ENABLED", true),
+		},
+		DBPool: DBPoolConfig{
+			MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 10),
+			MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 15),
+			ConnMaxLifetime: getEnvInt("DB_CONN_MAX_LIFETIME", 3600),
 		},
 	}
 
