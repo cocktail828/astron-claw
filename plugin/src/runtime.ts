@@ -44,12 +44,12 @@ export const activeSessionCtx = new Map<string, SessionContext>();
 // Pending tool context (SDK workaround)
 // Map<toolCtxKey, SessionContext & { _sk: string }> — per-invocation mapping
 // for after_tool_call (SDK bug: ctx.sessionKey is undefined there).
-// Key = "toolName\0paramsJSON", set in before_tool_call, consumed in after_tool_call.
+// Key = "sessionKey:requestId\0toolName\0paramsJSON", set in before_tool_call, consumed in after_tool_call.
 // ---------------------------------------------------------------------------
 export const pendingToolCtx = new Map<string, SessionContext & { _sk: string }>();
 
-export function toolCtxKey(toolName: string, params: unknown): string {
-  return `${toolName}\0${JSON.stringify(params ?? "")}`;
+export function toolCtxKey(sessionKey: string, toolName: string, params: unknown): string {
+  return `${sessionKey}\0${toolName}\0${JSON.stringify(params ?? "")}`;
 }
 
 // ---------------------------------------------------------------------------

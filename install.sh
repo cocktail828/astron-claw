@@ -385,17 +385,42 @@ ENTRY_JSON=$(node -e "
 if ! "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "$ENTRY_JSON" </dev/null 2>/dev/null; then
   # Fallback: write config directly to the JSON file if CLI fails
   log "config via CLI failed, writing directly to config file"
-  node -e "
+  OPENCLAW_CONFIG_PATH="$OPENCLAW_CONFIG_PATH" PLUGIN_NAME="$PLUGIN_NAME" ENTRY_JSON="$ENTRY_JSON" node -e "
     const fs = require('fs');
-    const cfgPath = '${OPENCLAW_CONFIG_PATH}';
+    const cfgPath = process.env.OPENCLAW_CONFIG_PATH;
+    const pluginName = process.env.PLUGIN_NAME;
+    const entryJson = process.env.ENTRY_JSON;
     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     if (!cfg.plugins) cfg.plugins = {};
     if (!cfg.plugins.entries) cfg.plugins.entries = {};
-    cfg.plugins.entries['${PLUGIN_NAME}'] = ${ENTRY_JSON};
+    cfg.plugins.entries[pluginName] = JSON.parse(entryJson);
     fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
   " </dev/null
 fi
 log "channel config updated"
+
+# ---------------------------------------------------------------------------
+# Register plugin in the trust allow-list so OpenClaw does not warn about
+# "plugins.allow is empty" on every startup.
+# ---------------------------------------------------------------------------
+log "registering plugin in plugins.allow trust list"
+OPENCLAW_CONFIG_PATH="$OPENCLAW_CONFIG_PATH" PLUGIN_NAME="$PLUGIN_NAME" OPENCLAW_BIN="$OPENCLAW_BIN" node -e "
+  const fs = require('fs');
+  const { execFileSync } = require('child_process');
+  const cfgPath = process.env.OPENCLAW_CONFIG_PATH;
+  const pluginName = process.env.PLUGIN_NAME;
+  const cliBin = process.env.OPENCLAW_BIN;
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  if (!cfg.plugins) cfg.plugins = {};
+  const allow = cfg.plugins.allow || [];
+  if (!allow.includes(pluginName)) allow.push(pluginName);
+  try {
+    execFileSync(cliBin, ['config', 'set', 'plugins.allow', '--json', JSON.stringify(allow)], { stdio: 'ignore' });
+  } catch {
+    cfg.plugins.allow = allow;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  }
+" </dev/null || log "warning: failed to update plugins.allow (non-fatal)"
 
 # ---------------------------------------------------------------------------
 # Restart gateway again to apply the new configuration

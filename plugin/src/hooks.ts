@@ -1,4 +1,5 @@
 import { activeSessionCtx, pendingToolCtx, toolCtxKey, logger } from "./runtime.js";
+import type { SessionContext } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // SDK event hooks (before_tool_call / after_tool_call)
@@ -9,10 +10,22 @@ export function registerToolHooks(api: any): void {
     // === DIAG: full before_tool_call event ===
     logger.info(`[DIAG] before_tool_call | tool=${event.toolName} sessionKey=${ctx.sessionKey} event=${JSON.stringify(event)}`);
 
-    const sessionCtx = activeSessionCtx.get(ctx.sessionKey);
+    // Look up session context — ctx.sessionKey from SDK may be the raw route key,
+    // but activeSessionCtx now uses per-request keys (sessionKey:requestId).
+    // Search for any entry whose key starts with ctx.sessionKey.
+    let sessionCtx: SessionContext | undefined;
+    let resolvedCtxKey: string = ctx.sessionKey;
+    for (const [k, v] of activeSessionCtx) {
+      if (k === ctx.sessionKey || k.startsWith(ctx.sessionKey + ":")) {
+        sessionCtx = v;
+        resolvedCtxKey = k;
+        break;
+      }
+    }
     if (!sessionCtx) return;
-    // Stash for after_tool_call which lacks ctx.sessionKey (SDK bug)
-    pendingToolCtx.set(toolCtxKey(event.toolName, event.params), { ...sessionCtx, _sk: ctx.sessionKey });
+    // Stash for after_tool_call which lacks ctx.sessionKey (SDK bug).
+    // Key now includes sessionKey to prevent cross-session collisions.
+    pendingToolCtx.set(toolCtxKey(resolvedCtxKey, event.toolName, event.params), { ...sessionCtx, _sk: resolvedCtxKey });
     const { bridgeClient, sessionId } = sessionCtx;
     const inputText = typeof event.params === "object"
       ? JSON.stringify(event.params) : String(event.params ?? "");
@@ -41,9 +54,36 @@ export function registerToolHooks(api: any): void {
     // === DIAG: full after_tool_call event ===
     logger.info(`[DIAG] after_tool_call | tool=${event.toolName} durationMs=${event.durationMs} error=${event.error ?? 'none'} result=${JSON.stringify(event.result)}`);
 
-    const key = toolCtxKey(event.toolName, event.params);
-    const sessionCtx = activeSessionCtx.get(ctx.sessionKey) || pendingToolCtx.get(key);
-    pendingToolCtx.delete(key); // cleanup
+    // Resolve session context: try activeSessionCtx (prefix match) first, then pendingToolCtx fallback.
+    // pendingToolCtx key now includes sessionKey prefix, so try all possible prefix matches.
+    let sessionCtx: SessionContext | undefined;
+    let pendingKey: string | undefined;
+
+    // Try activeSessionCtx first (prefix match on ctx.sessionKey)
+    for (const [k, v] of activeSessionCtx) {
+      if (k === ctx.sessionKey || k.startsWith(ctx.sessionKey + ":")) {
+        sessionCtx = v;
+        // Construct the matching pendingToolCtx key for cleanup
+        pendingKey = toolCtxKey(k, event.toolName, event.params);
+        break;
+      }
+    }
+
+    // Fallback: search pendingToolCtx for a key that matches toolName+params suffix.
+    // Guard with ctx.sessionKey prefix when available to prevent cross-session matches.
+    if (!sessionCtx) {
+      const suffix = `\0${event.toolName}\0${JSON.stringify(event.params ?? "")}`;
+      for (const [k, v] of pendingToolCtx) {
+        if (!k.endsWith(suffix)) continue;
+        if (ctx.sessionKey && !k.startsWith(ctx.sessionKey)) continue;
+        sessionCtx = v;
+        pendingKey = k;
+        break;
+      }
+    }
+
+    // Cleanup pending entry
+    if (pendingKey) pendingToolCtx.delete(pendingKey);
     if (!sessionCtx) return;
     const { bridgeClient, sessionId } = sessionCtx;
     const resultText = event.error

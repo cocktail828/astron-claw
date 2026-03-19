@@ -17,6 +17,7 @@ export class BridgeClient {
   ready: boolean;
   closing: boolean;
   authFailed: boolean;
+  evicted: boolean;
   backoffMs: number;
   attempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -43,6 +44,7 @@ export class BridgeClient {
     this.ready = false;
     this.closing = false;
     this.authFailed = false;
+    this.evicted = false;
     this.backoffMs = retry.baseMs;
     this.attempts = 0;
     this.reconnectTimer = null;
@@ -53,6 +55,7 @@ export class BridgeClient {
   start(): void {
     this.closing = false;
     this.authFailed = false;
+    this.evicted = false;
     this._connect();
   }
 
@@ -130,20 +133,22 @@ export class BridgeClient {
       this.ready = false;
       this._stopPing();
       this.log.warn?.(`[bridge] closed code=${code} reason=${reason.toString()}`);
-      this.onClose?.();
       if (code === 4001) {
         this._markAuthFailed("4001");
       } else if (code === 4005) {
+        this.evicted = true;
         this.log.info?.("[bridge] evicted by newer connection, will not retry");
       } else {
         this._scheduleReconnect();
       }
+      this.onClose?.();
     });
 
     this.ws.on("unexpected-response", (_req, res) => {
       const status = res.statusCode;
       if (status === 401) {
         this._markAuthFailed("http 401");
+        this.onClose?.();
         return;
       }
       this.log.warn?.(`[bridge] unexpected http response status=${status}`);
@@ -155,6 +160,8 @@ export class BridgeClient {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("401")) {
         this._markAuthFailed("http 401");
+        // Don't call onClose here — the subsequent "close" event will handle it.
+        // unexpected-response already covers HTTP 401 at the handshake stage.
       }
     });
   }
@@ -203,7 +210,7 @@ export class BridgeClient {
   }
 
   _scheduleReconnect(): void {
-    if (this.closing || this.authFailed) return;
+    if (this.closing || this.authFailed || this.evicted) return;
     if (this.reconnectTimer) return;            // already scheduled
     if (this.retry.maxAttempts > 0 && this.attempts >= this.retry.maxAttempts) {
       this.log.error?.("[bridge] retry limit reached, giving up");
