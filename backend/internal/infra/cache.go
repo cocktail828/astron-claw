@@ -3,7 +3,6 @@ package infra
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,12 +24,8 @@ func InitRedis(cfg config.RedisConfig) (redis.UniversalClient, error) {
 			Password: cfg.Password,
 		})
 	} else {
-		addr := cfg.Host + ":" + strconv.Itoa(cfg.Port)
-		if len(cfg.Addrs) == 1 {
-			addr = cfg.Addrs[0]
-		}
 		rdb = redis.NewClient(&redis.Options{
-			Addr:     addr,
+			Addr:     cfg.Addrs[0],
 			Password: cfg.Password,
 			DB:       cfg.DB,
 		})
@@ -41,12 +36,10 @@ func InitRedis(cfg config.RedisConfig) (redis.UniversalClient, error) {
 	}
 
 	mode := "standalone"
-	addr := cfg.Host + ":" + strconv.Itoa(cfg.Port)
+	addr := cfg.Addrs[0]
 	if cfg.IsCluster() {
 		mode = "cluster"
 		addr = strings.Join(cfg.Addrs, ",")
-	} else if len(cfg.Addrs) == 1 {
-		addr = cfg.Addrs[0]
 	}
 
 	log.Info().

@@ -52,8 +52,6 @@ func (c MysqlConfig) DSNWithoutDB() string {
 }
 
 type RedisConfig struct {
-	Host     string
-	Port     int
 	Password string
 	DB       int
 	Addrs    []string // Node addresses (comma-separated via REDIS_ADDRS); >1 means cluster mode
@@ -149,11 +147,9 @@ func Load() *AppConfig {
 			Database: getEnv("MYSQL_DATABASE", "astron_claw"),
 		},
 		Redis: RedisConfig{
-			Host:     getEnv("REDIS_HOST", "127.0.0.1"),
-			Port:     getEnvInt("REDIS_PORT", 6379),
 			Password: getEnv("REDIS_PASSWORD", ""),
 			DB:       getEnvInt("REDIS_DB", 0),
-			Addrs:    splitCSV(getEnv("REDIS_ADDRS", "")),
+			Addrs:    splitCSV(getEnv("REDIS_ADDRS", "127.0.0.1:6379")),
 		},
 		Server: ServerConfig{
 			Host:           getEnv("SERVER_HOST", "0.0.0.0"),
@@ -201,7 +197,7 @@ func Load() *AppConfig {
 	}
 
 	log.Info().
-		Str("redis", cfg.Redis.Host+":"+strconv.Itoa(cfg.Redis.Port)).
+		Str("redis", strings.Join(cfg.Redis.Addrs, ",")).
 		Str("mysql", cfg.MySQL.Host+":"+strconv.Itoa(cfg.MySQL.Port)+"/"+cfg.MySQL.Database).
 		Str("storage", cfg.Storage.Type).
 		Bool("otlp", cfg.OTLP.Enabled).

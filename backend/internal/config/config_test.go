@@ -10,7 +10,7 @@ func TestLoad_Defaults(t *testing.T) {
 	// Clear env to test defaults
 	envKeys := []string{
 		"MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE",
-		"REDIS_HOST", "REDIS_PORT", "REDIS_PASSWORD", "REDIS_DB", "REDIS_ADDRS",
+		"REDIS_ADDRS", "REDIS_PASSWORD", "REDIS_DB",
 		"SERVER_HOST", "SERVER_PORT", "SERVER_LOG_LEVEL",
 		"QUEUE_TYPE", "QUEUE_MAX_STREAM_LEN",
 		"OSS_TYPE", "OSS_ENDPOINT", "OSS_PUBLIC_ENDPOINT", "OSS_ACCESS_KEY", "OSS_SECRET_KEY", "OSS_BUCKET",
@@ -40,8 +40,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.MySQL.Database != "astron_claw" {
 		t.Errorf("MySQL.Database = %q, want astron_claw", cfg.MySQL.Database)
 	}
-	if cfg.Redis.Host != "127.0.0.1" {
-		t.Errorf("Redis.Host = %q, want 127.0.0.1", cfg.Redis.Host)
+	if len(cfg.Redis.Addrs) != 1 || cfg.Redis.Addrs[0] != "127.0.0.1:6379" {
+		t.Errorf("Redis.Addrs = %v, want [127.0.0.1:6379]", cfg.Redis.Addrs)
 	}
 	if cfg.Redis.IsCluster() {
 		t.Error("Redis should default to standalone (not cluster)")
