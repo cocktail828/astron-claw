@@ -34,7 +34,7 @@ preview:
 # ── Install all dependencies ────────────────────────────────────────────────
 install:
 	cd web && pnpm install
-	cd server && uv sync
+	cd backend && go mod download
 
 # ── Clean build artifacts ───────────────────────────────────────────────────
 clean:
