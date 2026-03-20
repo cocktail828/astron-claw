@@ -120,7 +120,7 @@ func (app *App) chatSSE(c *gin.Context) {
 	var sessionID string
 	var sessionNumber int
 	if body.SessionID != nil && *body.SessionID != "" {
-		sid, _, found := app.Bridge.GetSession(ctx, tokenStr, *body.SessionID)
+		sid, snum, found := app.Bridge.GetSession(ctx, tokenStr, *body.SessionID)
 		if !found {
 			log.Warn().Str("session", *body.SessionID).Str("token", tp).
 				Msg("SSE: session not found")
@@ -130,14 +130,6 @@ func (app *App) chatSSE(c *gin.Context) {
 			return
 		}
 		sessionID = sid
-		snum, err := app.Bridge.IncrementSessionNumber(ctx, tokenStr, sessionID)
-		if err != nil {
-			log.Error().Err(err).Str("token", tp).Msg("SSE: failed to increment session number")
-			reqStatus = "error"
-			reqCode = 500
-			c.JSON(500, gin.H{"code": 500, "error": "Failed to update session"})
-			return
-		}
 		sessionNumber = snum
 	} else {
 		var err error

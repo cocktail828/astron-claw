@@ -51,32 +51,6 @@ func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID strin
 	return initialNumber, nil
 }
 
-// IncrementSessionNumber atomically increments session_number and returns the new value.
-func (s *SessionStore) IncrementSessionNumber(ctx context.Context, token, sessionID string) (int, error) {
-	result := s.db.WithContext(ctx).
-		Model(&model.ChatSession{}).
-		Where("token = ? AND session_id = ?", token, sessionID).
-		UpdateColumn("session_number", gorm.Expr("session_number + 1"))
-	if result.Error != nil {
-		return 0, fmt.Errorf("increment session number: %w", result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return 0, fmt.Errorf("session not found")
-	}
-
-	// Read back the updated value
-	var session model.ChatSession
-	if err := s.db.WithContext(ctx).
-		Where("token = ? AND session_id = ?", token, sessionID).
-		First(&session).Error; err != nil {
-		return 0, fmt.Errorf("read updated session: %w", err)
-	}
-
-	// Invalidate Redis cache so next read rebuilds it
-	s.rdb.Del(ctx, sessionsPrefix+token)
-	return session.SessionNumber, nil
-}
-
 // RemoveSessions deletes all session data for a token.
 func (s *SessionStore) RemoveSessions(ctx context.Context, token string) error {
 	if err := s.db.WithContext(ctx).Where("token = ?", token).Delete(&model.ChatSession{}).Error; err != nil {
