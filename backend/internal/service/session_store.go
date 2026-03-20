@@ -9,7 +9,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/pkg"
@@ -32,42 +31,50 @@ func NewSessionStore(db *gorm.DB, rdb redis.UniversalClient) *SessionStore {
 }
 
 // CreateSession persists a new session to MySQL and caches in Redis.
+// New sessions start with session_number = 1.
 func (s *SessionStore) CreateSession(ctx context.Context, token, sessionID string) (int, error) {
 	now := time.Now().UTC()
-	var sessionNumber int
+	const initialNumber = 1
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var maxNum int
-		if err := tx.Model(&model.ChatSession{}).
-			Where("token = ?", token).
-			Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("COALESCE(MAX(session_number), 0)").
-			Scan(&maxNum).Error; err != nil {
-			return fmt.Errorf("get max session number: %w", err)
-		}
-		sessionNumber = maxNum + 1
-
-		session := model.ChatSession{
-			Token:         token,
-			SessionID:     sessionID,
-			SessionNumber: sessionNumber,
-			CreatedAt:     now,
-		}
-		return tx.Create(&session).Error
-	})
-	if err != nil {
+	session := model.ChatSession{
+		Token:         token,
+		SessionID:     sessionID,
+		SessionNumber: initialNumber,
+		CreatedAt:     now,
+	}
+	if err := s.db.WithContext(ctx).Create(&session).Error; err != nil {
 		return 0, fmt.Errorf("create session: %w", err)
 	}
 
-	// Redis — best effort (outside transaction)
-	sessionsKey := sessionsPrefix + token
-	sessionJSON, _ := json.Marshal(SessionInfo{ID: sessionID, Number: sessionNumber})
-	if err := s.rdb.RPush(ctx, sessionsKey, string(sessionJSON)).Err(); err != nil {
-		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Redis cache write failed for create_session")
-	} else {
-		s.rdb.Expire(ctx, sessionsKey, sessionCacheTTL)
+	// Invalidate Redis cache so next GetSessions rebuilds from DB
+	s.rdb.Del(ctx, sessionsPrefix+token)
+	return initialNumber, nil
+}
+
+// IncrementSessionNumber atomically increments session_number and returns the new value.
+func (s *SessionStore) IncrementSessionNumber(ctx context.Context, token, sessionID string) (int, error) {
+	result := s.db.WithContext(ctx).
+		Model(&model.ChatSession{}).
+		Where("token = ? AND session_id = ?", token, sessionID).
+		UpdateColumn("session_number", gorm.Expr("session_number + 1"))
+	if result.Error != nil {
+		return 0, fmt.Errorf("increment session number: %w", result.Error)
 	}
-	return sessionNumber, nil
+	if result.RowsAffected == 0 {
+		return 0, fmt.Errorf("session not found")
+	}
+
+	// Read back the updated value
+	var session model.ChatSession
+	if err := s.db.WithContext(ctx).
+		Where("token = ? AND session_id = ?", token, sessionID).
+		First(&session).Error; err != nil {
+		return 0, fmt.Errorf("read updated session: %w", err)
+	}
+
+	// Invalidate Redis cache so next read rebuilds it
+	s.rdb.Del(ctx, sessionsPrefix+token)
+	return session.SessionNumber, nil
 }
 
 // RemoveSessions deletes all session data for a token.

@@ -385,6 +385,11 @@ func (b *ConnectionBridge) GetSession(ctx context.Context, token, sessionID stri
 	return b.sessionStore.GetSession(ctx, token, sessionID)
 }
 
+// IncrementSessionNumber increments the session_number for a session.
+func (b *ConnectionBridge) IncrementSessionNumber(ctx context.Context, token, sessionID string) (int, error) {
+	return b.sessionStore.IncrementSessionNumber(ctx, token, sessionID)
+}
+
 // GetSessions returns all sessions for a token.
 func (b *ConnectionBridge) GetSessions(ctx context.Context, token string) ([]SessionInfo, error) {
 	return b.sessionStore.GetSessions(ctx, token)
