@@ -75,7 +75,7 @@ func (app *App) listTokens(c *gin.Context) {
 
 	// Filter by bot status (post-query filter — only applies to current page)
 	if botStatus == "online" {
-		var filtered []tokenInfo
+		filtered := make([]tokenInfo, 0)
 		for _, t := range pageItems {
 			if t.BotOnline {
 				filtered = append(filtered, t)
@@ -142,7 +142,7 @@ func (app *App) listTokensWithBotSort(c *gin.Context, ctx context.Context, page,
 
 	filtered := allTokens
 	if botStatus == "online" {
-		var f []tokenInfo
+		f := make([]tokenInfo, 0)
 		for _, t := range filtered {
 			if t.BotOnline {
 				f = append(f, t)
