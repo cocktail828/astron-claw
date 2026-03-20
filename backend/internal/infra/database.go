@@ -22,25 +22,26 @@ func InitDB(cfg config.MysqlConfig, pool config.DBPoolConfig) (*gorm.DB, error) 
 		return nil, fmt.Errorf("ensure database: %w", err)
 	}
 
-	db, err := gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
+	sqlDB, err := sql.Open("mysql", cfg.DSN())
 	if err != nil {
-		return nil, fmt.Errorf("gorm open: %w", err)
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("get sql.DB: %w", err)
+		return nil, fmt.Errorf("sql open: %w", err)
 	}
 
 	sqlDB.SetMaxIdleConns(pool.MaxIdleConns)
 	sqlDB.SetMaxOpenConns(pool.MaxOpenConns)
 	sqlDB.SetConnMaxLifetime(time.Duration(pool.ConnMaxLifetime) * time.Second)
 
-	// Verify connectivity
 	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
 		return nil, fmt.Errorf("mysql ping: %w", err)
+	}
+
+	db, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("gorm open: %w", err)
 	}
 
 	log.Info().

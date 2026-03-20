@@ -21,11 +21,12 @@ type MysqlConfig struct {
 
 func (c MysqlConfig) DSN() string {
 	cfg := mysqldriver.Config{
-		User:   c.User,
-		Passwd: c.Password,
-		Net:    "tcp",
-		Addr:   c.Host + ":" + strconv.Itoa(c.Port),
-		DBName: c.Database,
+		User:                 c.User,
+		Passwd:               c.Password,
+		Net:                  "tcp",
+		Addr:                 c.Host + ":" + strconv.Itoa(c.Port),
+		DBName:               c.Database,
+		AllowNativePasswords: true,
 		Params: map[string]string{
 			"charset":   "utf8mb4",
 			"parseTime": "True",
@@ -38,10 +39,11 @@ func (c MysqlConfig) DSN() string {
 // DSNWithoutDB returns DSN without database name for initial database creation
 func (c MysqlConfig) DSNWithoutDB() string {
 	cfg := mysqldriver.Config{
-		User:   c.User,
-		Passwd: c.Password,
-		Net:    "tcp",
-		Addr:   c.Host + ":" + strconv.Itoa(c.Port),
+		User:                 c.User,
+		Passwd:               c.Password,
+		Net:                  "tcp",
+		Addr:                 c.Host + ":" + strconv.Itoa(c.Port),
+		AllowNativePasswords: true,
 		Params: map[string]string{
 			"charset":   "utf8mb4",
 			"parseTime": "True",
