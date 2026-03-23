@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 
 from opentelemetry.sdk.metrics.export import (
     AggregationTemporality,
@@ -33,8 +34,13 @@ KEY_META = "{otlp}:meta"
 KEY_RESOURCE = "{otlp}:resource"
 
 
-def _gauge_key(pid: int | str) -> str:
-    return f"{{otlp}}:gauges:{pid}"
+def _gauge_key(worker_id: str) -> str:
+    return f"{{otlp}}:gauges:{worker_id}"
+
+
+def _worker_id() -> str:
+    """Return a cluster-unique worker identifier: hostname:pid."""
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def _attrs_key(name: str, attrs: dict) -> str:
@@ -93,7 +99,7 @@ class RedisMetricExporter(MetricExporter):
                 decode_responses=True,
             )
 
-        self._pid = os.getpid()
+        self._worker_id = _worker_id()
         self._service_name = service_name
         self._gauge_ttl_ms = export_interval_ms * 3
 
@@ -170,10 +176,10 @@ class RedisMetricExporter(MetricExporter):
 
         # Write gauge data to per-worker key
         if has_gauge and gauge_fields:
-            gk = _gauge_key(self._pid)
+            gk = _gauge_key(self._worker_id)
             pipe.hset(gk, mapping=gauge_fields)
             pipe.pexpire(gk, self._gauge_ttl_ms)
-            pipe.sadd(KEY_GAUGE_PIDS, str(self._pid))
+            pipe.sadd(KEY_GAUGE_PIDS, self._worker_id)
 
         # Write resource info (idempotent)
         pipe.hset(KEY_RESOURCE, "service.name", self._service_name)
