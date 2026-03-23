@@ -45,13 +45,15 @@ func (app *App) chatSSE(c *gin.Context) {
 	reqStatus := "success"
 	reqCode := 200
 	recordReq := func() {
-		attrs := metric.WithAttributeSet(attribute.NewSet(
+		counterAttrs := metric.WithAttributeSet(attribute.NewSet(
 			attribute.String("status", reqStatus),
 			attribute.String("code", strconv.Itoa(reqCode)),
-			attribute.String("token_prefix", tp),
 		))
-		telemetry.ChatRequestTotal.Add(context.Background(), 1, attrs)
-		telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(), attrs)
+		histAttrs := metric.WithAttributeSet(attribute.NewSet(
+			attribute.String("status", reqStatus),
+		))
+		telemetry.ChatRequestTotal.Add(context.Background(), 1, counterAttrs)
+		telemetry.ChatRequestDuration.Record(context.Background(), time.Since(t0).Seconds(), histAttrs)
 	}
 	defer recordReq()
 
@@ -188,7 +190,6 @@ func (app *App) chatSSE(c *gin.Context) {
 		telemetry.ChatStreamDuration.Record(context.Background(), streamDuration,
 			metric.WithAttributeSet(attribute.NewSet(
 				attribute.String("close_reason", closeReason),
-				attribute.String("token_prefix", tp),
 			)),
 		)
 	}()
