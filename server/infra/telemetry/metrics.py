@@ -68,8 +68,3 @@ def ensure_instruments() -> None:
     chat_request_total, chat_request_duration, chat_stream_duration, chat_active_streams = (
         _create_instruments(meter)
     )
-
-
-def _token_prefix(token: str) -> str:
-    """Return first 10 chars + '...' for token label."""
-    return f"{token[:10]}..." if len(token) > 10 else token
