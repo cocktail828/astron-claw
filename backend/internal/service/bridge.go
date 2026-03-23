@@ -395,6 +395,24 @@ func (b *ConnectionBridge) CleanupOldSessions(ctx context.Context, maxAgeDays fl
 	return b.sessionStore.CleanupOldSessions(ctx, maxAgeDays*86400)
 }
 
+// SendCancelToBot sends a session/cancel JSON-RPC notification to the bot inbox.
+func (b *ConnectionBridge) SendCancelToBot(ctx context.Context, token, sessionID string) error {
+	rpcRequest := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "session/cancel",
+		"params":  map[string]interface{}{"sessionId": sessionID},
+	}
+	inbox := BotInboxPrefix + token
+	data, _ := json.Marshal(map[string]interface{}{"rpc_request": rpcRequest})
+	if _, err := b.queue.Publish(ctx, inbox, string(data)); err != nil {
+		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to send cancel to bot")
+		return err
+	}
+	log.Info().Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", pkg.SafePrefix(token, 10)).
+		Msg("Sent cancel to bot")
+	return nil
+}
+
 // SendToBot creates a JSON-RPC request and sends it to the bot inbox.
 func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage string, mediaURLs []string, sessionID string) (string, error) {
 	if sessionID == "" {

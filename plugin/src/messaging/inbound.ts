@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SILENT_REPLY_TOKEN, isSilentReplyText, loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
 
 import { PLUGIN_ID } from "../constants.js";
-import { getRuntime, logger, activeSessionCtx, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
+import { getRuntime, logger, activeSessionCtx, activeDispatches, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
 import { inferMediaType } from "../bridge/media.js";
 import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
 import type { BridgeClient } from "../bridge/client.js";
@@ -40,6 +40,21 @@ export async function handleInboundMessage(msg: any, account: ResolvedAccount, b
   // Bridge server sends JSON-RPC requests (session/prompt) from chat clients
   if (msg.jsonrpc === "2.0" && msg.method === "session/prompt") {
     await handleJsonRpcPrompt(msg, account, bridgeClient);
+    return;
+  }
+
+  // Handle session cancel (user clicked Stop)
+  if (msg.jsonrpc === "2.0" && msg.method === "session/cancel") {
+    const cancelSessionId = msg.params?.sessionId;
+    if (cancelSessionId) {
+      const ac = activeDispatches.get(cancelSessionId);
+      if (ac) {
+        logger.info(`Cancelling dispatch for session ${cancelSessionId}`);
+        ac.abort();
+      } else {
+        logger.debug(`No active dispatch for session ${cancelSessionId}, cancel is no-op`);
+      }
+    }
     return;
   }
 
@@ -353,6 +368,8 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   // each other's session context. The requestId suffix ensures uniqueness.
   const ctxKey = `${sessionKey}:${requestId ?? randomUUID()}`;
   activeSessionCtx.set(ctxKey, { bridgeClient, sessionId });
+  const abortController = new AbortController();
+  activeDispatches.set(sessionId, abortController);
   try {
     if (rt.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
       await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
@@ -361,7 +378,9 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         dispatcherOptions,
         replyOptions: {
           disableBlockStreaming: false,
+          abortSignal: abortController.signal,
           onPartialReply: async (payload: any) => {
+            if (abortController.signal.aborted) return;
             const fullText = payload?.text ?? "";
             if (!fullText) return;
 
@@ -434,14 +453,29 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       });
     }
   } catch (err) {
-    logger.error(`Failed to dispatch inbound message: ${String(err)}`);
-    bridgeClient.send({
-      jsonrpc: "2.0",
-      id: requestId,
-      sessionId,
-      error: { code: -32000, message: String(err) },
-    });
+    if (abortController.signal.aborted) {
+      logger.info(`Dispatch aborted for session ${sessionId}`);
+      if (!finalSent) {
+        const partialText = allTurnsText + lastPartialText;
+        sendFinal(partialText);
+      }
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        id: requestId,
+        sessionId,
+        result: { stopReason: "end_turn" },
+      });
+    } else {
+      logger.error(`Failed to dispatch inbound message: ${String(err)}`);
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        id: requestId,
+        sessionId,
+        error: { code: -32000, message: String(err) },
+      });
+    }
   } finally {
+    activeDispatches.delete(sessionId);
     activeSessionCtx.delete(ctxKey);
     // Sweep any leaked _pendingToolCtx entries for this request
     for (const [k, v] of pendingToolCtx) {

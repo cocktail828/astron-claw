@@ -217,6 +217,7 @@ func (app *App) chatSSE(c *gin.Context) {
 		case <-c.Request.Context().Done():
 			closeReason = "client_disconnect"
 			log.Info().Str("token", tp).Msg("SSE: client disconnected")
+			go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
 			return
 		default:
 		}
@@ -249,6 +250,7 @@ func (app *App) chatSSE(c *gin.Context) {
 			select {
 			case <-c.Request.Context().Done():
 				closeReason = "client_disconnect"
+				go app.Bridge.SendCancelToBot(context.Background(), tokenStr, sessionID)
 				return
 			default:
 			}

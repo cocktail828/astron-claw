@@ -80,6 +80,11 @@ export function getChannelRuntimeState(accountId: string): ChannelRuntimeState {
 }
 
 // ---------------------------------------------------------------------------
+// Active dispatches (per-sessionId) — used for cancel/abort
+// ---------------------------------------------------------------------------
+export const activeDispatches = new Map<string, AbortController>();
+
+// ---------------------------------------------------------------------------
 // Active bridge clients (per-accountId)
 // ---------------------------------------------------------------------------
 export const activeBridgeClients = new Map<string, BridgeClient>();
