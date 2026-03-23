@@ -27,9 +27,8 @@ _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 
 def _record_request(status: str, code: int, t0: float) -> None:
     """Record request counter + duration histogram for a given status."""
-    attrs = {"status": status, "code": str(code)}
-    chat_request_total.add(1, attrs)
-    chat_request_duration.record(time.time() - t0, attrs)
+    chat_request_total.add(1, {"status": status, "code": str(code)})
+    chat_request_duration.record(time.time() - t0)
 
 
 # ---------------------------------------------------------------------------
