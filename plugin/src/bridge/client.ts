@@ -161,11 +161,16 @@ export class BridgeClient {
       if (this.ws !== ws) return;
       const status = res.statusCode;
       if (status === 401) {
+        this._abandonSocket(ws);
         this._markAuthFailed("http 401");
         this.onClose?.();
         return;
       }
       this.log.warn?.(`[bridge] unexpected http response status=${status}`);
+      this._abandonSocket(ws);
+      try {
+        (res.socket as any)?.destroy?.();
+      } catch {}
       this._scheduleReconnect();
     });
 
@@ -193,6 +198,13 @@ export class BridgeClient {
 
   _markSeen(): void {
     this.lastSeenAt = Date.now();
+  }
+
+  _abandonSocket(ws: WebSocket): void {
+    if (this.ws !== ws) return;
+    this.ready = false;
+    this.ws = null;
+    this._stopPing();
   }
 
   _startPing(): void {
