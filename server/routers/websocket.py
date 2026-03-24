@@ -19,6 +19,12 @@ async def ws_bot(
         logger.warning("Bot connection rejected: invalid token {}...", bot_token[:10])
         return
 
+    if state.bridge.is_draining():
+        await ws.accept()
+        await ws.close(code=Err.WS_SERVER_RESTART.status, reason=Err.WS_SERVER_RESTART.message)
+        logger.info("Bot connection rejected: worker draining token={}...", bot_token[:10])
+        return
+
     await ws.accept()
 
     client = ws.client
