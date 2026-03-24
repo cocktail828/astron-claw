@@ -1,6 +1,13 @@
 import { activeSessionCtx, pendingToolCtx, toolCtxKey, logger } from "./runtime.js";
 import type { SessionContext } from "./types.js";
 
+function sendSessionUpdate(sessionCtx: SessionContext, payload: any, description: string): void {
+  const ok = sessionCtx.bridgeClient.send(payload);
+  if (!ok) {
+    logger.warn(`[bridge] send dropped (${description}) session=${sessionCtx.sessionId}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SDK event hooks (before_tool_call / after_tool_call)
 // ---------------------------------------------------------------------------
@@ -26,10 +33,10 @@ export function registerToolHooks(api: any): void {
     // Stash for after_tool_call which lacks ctx.sessionKey (SDK bug).
     // Key now includes sessionKey to prevent cross-session collisions.
     pendingToolCtx.set(toolCtxKey(resolvedCtxKey, event.toolName, event.params), { ...sessionCtx, _sk: resolvedCtxKey });
-    const { bridgeClient, sessionId } = sessionCtx;
+    const { sessionId } = sessionCtx;
     const inputText = typeof event.params === "object"
       ? JSON.stringify(event.params) : String(event.params ?? "");
-    bridgeClient.send({
+    sendSessionUpdate(sessionCtx, {
       jsonrpc: "2.0",
       method: "session/update",
       params: {
@@ -41,7 +48,7 @@ export function registerToolHooks(api: any): void {
           content: inputText,
         },
       },
-    });
+    }, "tool_call");
   });
 
   // Hook: after_tool_call – send tool result to bridge
@@ -85,11 +92,11 @@ export function registerToolHooks(api: any): void {
     // Cleanup pending entry
     if (pendingKey) pendingToolCtx.delete(pendingKey);
     if (!sessionCtx) return;
-    const { bridgeClient, sessionId } = sessionCtx;
+    const { sessionId } = sessionCtx;
     const resultText = event.error
       ? `Error: ${event.error}`
       : (typeof event.result === "string" ? event.result : JSON.stringify(event.result ?? ""));
-    bridgeClient.send({
+    sendSessionUpdate(sessionCtx, {
       jsonrpc: "2.0",
       method: "session/update",
       params: {
@@ -101,7 +108,7 @@ export function registerToolHooks(api: any): void {
           content: resultText,
         },
       },
-    });
+    }, "tool_result");
   });
 
   // === DIAG: listen to ALL SDK events for full trace ===

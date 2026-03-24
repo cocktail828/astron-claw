@@ -264,10 +264,18 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   let turnIndex = 0;       // track agent turns for logging
   let turnTextLength = 0;  // cumulative text length within current turn
 
+  const sendBridge = (payload: any, description: string): boolean => {
+    const ok = bridgeClient.send(payload);
+    if (!ok) {
+      logger.warn(`[bridge] send dropped (${description}) session=${sessionId} request=${String(requestId ?? "n/a")}`);
+    }
+    return ok;
+  };
+
   // Helper: send a chunk to the bridge
   const sendChunk = (text: string): void => {
     if (!text) return;
-    bridgeClient.send({
+    const ok = sendBridge({
       jsonrpc: "2.0",
       method: "session/update",
       params: {
@@ -277,8 +285,8 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
           content: { type: "text", text },
         },
       },
-    });
-    chunkCount++;
+    }, "agent_message_chunk");
+    if (ok) chunkCount++;
   };
 
   // Helper: send final completion to the bridge
@@ -286,8 +294,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   // turns like file sends) so that the SSE stream receives a "done" frame.
   const sendFinal = (text: string): void => {
     if (finalSent) return;
-    finalSent = true;
-    bridgeClient.send({
+    const ok = sendBridge({
       jsonrpc: "2.0",
       method: "session/update",
       params: {
@@ -297,7 +304,8 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
           content: { type: "text", text: text || "" },
         },
       },
-    });
+    }, "agent_message_final");
+    if (ok) finalSent = true;
   };
 
   // Build dispatcher options (following adp-openclaw pattern):
@@ -414,33 +422,33 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       // text is delivered via block replies, not final replies. adp-openclaw also
       // does not rely on queuedFinal.
       const hasResponse = finalSent || chunkCount > 0;
-      bridgeClient.send({
+      sendBridge({
         jsonrpc: "2.0",
         id: requestId,
         sessionId,
         result: { stopReason: hasResponse ? "end_turn" : "no_reply" },
-      });
+      }, "session_result");
 
       if (!hasResponse) {
         logger.warn("No response generated for inbound message");
       }
     } else {
       logger.warn("dispatchReplyWithBufferedBlockDispatcher not available on runtime");
-      bridgeClient.send({
+      sendBridge({
         jsonrpc: "2.0",
         id: requestId,
         sessionId,
         error: { code: -32000, message: "Dispatch not available" },
-      });
+      }, "dispatch_not_available");
     }
   } catch (err) {
     logger.error(`Failed to dispatch inbound message: ${String(err)}`);
-    bridgeClient.send({
+    sendBridge({
       jsonrpc: "2.0",
       id: requestId,
       sessionId,
       error: { code: -32000, message: String(err) },
-    });
+    }, "dispatch_error");
   } finally {
     activeSessionCtx.delete(ctxKey);
     // Sweep any leaked _pendingToolCtx entries for this request
