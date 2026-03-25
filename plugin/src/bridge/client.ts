@@ -23,8 +23,9 @@ export class BridgeClient {
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   pingTimer: ReturnType<typeof setInterval> | null;
   lastSeenAt: number;
+  websocketFactory: ((url: string, options: any) => WebSocket) | undefined;
 
-  constructor({ url, token, logger: log, onMessage, onReady, onClose, retry }: {
+  constructor({ url, token, logger: log, onMessage, onReady, onClose, retry, websocketFactory }: {
     url: string;
     token: string;
     logger: any;
@@ -32,6 +33,7 @@ export class BridgeClient {
     onReady?: () => void;
     onClose?: () => void;
     retry: RetryConfig;
+    websocketFactory?: (url: string, options: any) => WebSocket;
   }) {
     this.url = url;
     this.token = token;
@@ -50,6 +52,7 @@ export class BridgeClient {
     this.reconnectTimer = null;
     this.pingTimer = null;
     this.lastSeenAt = 0;
+    this.websocketFactory = websocketFactory;
   }
 
   start(): void {
@@ -91,6 +94,9 @@ export class BridgeClient {
 
   _connect(): void {
     if (this.closing) return;
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
+      return;
+    }
 
     const headers: Record<string, string> = {};
     if (this.token) {
@@ -98,9 +104,13 @@ export class BridgeClient {
     }
 
     this.log.info?.(`[bridge] connecting to ${this.url}`);
-    this.ws = new WebSocket(this.url, { headers, handshakeTimeout: LIVENESS_TIMEOUT_MS });
+    const ws = this.websocketFactory
+      ? this.websocketFactory(this.url, { headers, handshakeTimeout: LIVENESS_TIMEOUT_MS })
+      : new WebSocket(this.url, { headers, handshakeTimeout: LIVENESS_TIMEOUT_MS });
+    this.ws = ws;
 
-    this.ws.on("open", () => {
+    ws.on("open", () => {
+      if (this.ws !== ws) return;
       this.ready = true;
       this._markSeen();
       this._startPing();
@@ -110,7 +120,8 @@ export class BridgeClient {
       this.onReady?.();
     });
 
-    this.ws.on("message", (data) => {
+    ws.on("message", (data) => {
+      if (this.ws !== ws) return;
       this._markSeen();
       const raw = data.toString();
       if (raw.trim().toLowerCase() === "ping") {
@@ -129,8 +140,10 @@ export class BridgeClient {
       this.onMessage?.(msg);
     });
 
-    this.ws.on("close", (code, reason) => {
+    ws.on("close", (code, reason) => {
+      if (this.ws !== ws) return;
       this.ready = false;
+      this.ws = null;
       this._stopPing();
       this.log.warn?.(`[bridge] closed code=${code} reason=${reason.toString()}`);
       if (code === 4001) {
@@ -144,18 +157,25 @@ export class BridgeClient {
       this.onClose?.();
     });
 
-    this.ws.on("unexpected-response", (_req, res) => {
+    ws.on("unexpected-response", (_req, res) => {
+      if (this.ws !== ws) return;
       const status = res.statusCode;
       if (status === 401) {
+        this._abandonSocket(ws);
         this._markAuthFailed("http 401");
         this.onClose?.();
         return;
       }
       this.log.warn?.(`[bridge] unexpected http response status=${status}`);
+      this._abandonSocket(ws);
+      try {
+        (res.socket as any)?.destroy?.();
+      } catch {}
       this._scheduleReconnect();
     });
 
-    this.ws.on("error", (err) => {
+    ws.on("error", (err) => {
+      if (this.ws !== ws) return;
       this.log.warn?.(`[bridge] error: ${String(err)}`);
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("401")) {
@@ -178,6 +198,13 @@ export class BridgeClient {
 
   _markSeen(): void {
     this.lastSeenAt = Date.now();
+  }
+
+  _abandonSocket(ws: WebSocket): void {
+    if (this.ws !== ws) return;
+    this.ready = false;
+    this.ws = null;
+    this._stopPing();
   }
 
   _startPing(): void {

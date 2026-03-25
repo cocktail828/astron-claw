@@ -14,7 +14,6 @@ from infra.telemetry.metrics import (
     chat_request_duration,
     chat_stream_duration,
     chat_active_streams,
-    _token_prefix,
 )
 import services.state as state
 from services.bridge import CHAT_INBOX_PREFIX
@@ -26,11 +25,10 @@ _SSE_BLOCK_MS = 1000  # XREADGROUP block timeout — short so we can send heartb
 _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
 
 
-def _record_request(status: str, code: int, token_prefix: str, t0: float) -> None:
+def _record_request(status: str, code: int, t0: float) -> None:
     """Record request counter + duration histogram for a given status."""
-    attrs = {"status": status, "code": str(code), "token_prefix": token_prefix}
-    chat_request_total.add(1, attrs)
-    chat_request_duration.record(time.time() - t0, attrs)
+    chat_request_total.add(1, {"status": status, "code": str(code)})
+    chat_request_duration.record(time.time() - t0)
 
 
 # ---------------------------------------------------------------------------
@@ -200,11 +198,8 @@ async def _stream_with_cleanup(
     req_id: str,
 ):
     """Wrap _stream_response and delete the chat inbox stream when done."""
-    tp = _token_prefix(token)
-    stream_attrs = {"token_prefix": tp}
-
     # Track active stream
-    chat_active_streams.add(1, stream_attrs)
+    chat_active_streams.add(1)
     stream_start = time.time()
     close_reason = "done"
 
@@ -224,12 +219,12 @@ async def _stream_with_cleanup(
         close_reason = "error"
         raise
     finally:
-        chat_active_streams.add(-1, stream_attrs)
+        chat_active_streams.add(-1)
         stream_duration = time.time() - stream_start
 
         chat_stream_duration.record(
             stream_duration,
-            {"close_reason": close_reason, "token_prefix": tp},
+            {"close_reason": close_reason},
         )
 
         # NOTE: Do NOT delete_queue here.  A new SSE request for the same
@@ -253,7 +248,6 @@ async def chat_sse(
 ):
     t0 = time.time()
     token: str = request.state.token
-    tp = _token_prefix(token)
 
     # Validate message content — normalize media URLs
     content = body.content or ""
@@ -264,23 +258,23 @@ async def chat_sse(
             if item.type == "url":
                 if not item.content.startswith(("http://", "https://")):
                     logger.warning("SSE: bad request — invalid media URL scheme: {} (token={}...)", item.content, token[:10])
-                    _record_request("bad_request", 400, tp, t0)
+                    _record_request("bad_request", 400, t0)
                     return error_response(Err.MEDIA_BAD_URL_SCHEME, detail=item.content)
                 media_urls.append(item.content)
             else:
                 logger.warning("SSE: bad request — unsupported media type: {} (token={}...)", item.type, token[:10])
-                _record_request("bad_request", 400, tp, t0)
+                _record_request("bad_request", 400, t0)
                 return error_response(Err.MEDIA_UNSUPPORTED_TYPE, detail=item.type)
 
     if not content and not media_urls:
         logger.warning("SSE: bad request — empty message (token={}...)", token[:10])
-        _record_request("bad_request", 400, tp, t0)
+        _record_request("bad_request", 400, t0)
         return error_response(Err.CHAT_EMPTY_MESSAGE)
 
     # Check bot connected
     if not await state.bridge.is_bot_connected(token):
         logger.warning("SSE: no bot connected (token={}...)", token[:10])
-        _record_request("no_bot", 400, tp, t0)
+        _record_request("no_bot", 400, t0)
         return error_response(Err.CHAT_NO_BOT)
 
     # Resolve session
@@ -288,7 +282,7 @@ async def chat_sse(
         session_id, session_number = await _resolve_session(token, body.sessionId)
     except ValueError as e:
         logger.warning("SSE: session not found {} (token={}...)", body.sessionId, token[:10])
-        _record_request("session_not_found", 404, tp, t0)
+        _record_request("session_not_found", 404, t0)
         return error_response(Err.SESSION_NOT_FOUND, detail=body.sessionId)
 
     # Clear stale events and reset consumer group for this SSE request
@@ -305,11 +299,11 @@ async def chat_sse(
     )
     if not req_id:
         logger.error("SSE: send_to_bot failed (token={}...)", token[:10])
-        _record_request("send_fail", 500, tp, t0)
+        _record_request("send_fail", 500, t0)
         return error_response(Err.CHAT_SEND_FAILED)
 
     # Success — entering SSE stream
-    _record_request("success", 200, tp, t0)
+    _record_request("success", 200, t0)
 
     logger.info(
         "SSE: chat started req={} session={} (token={}...)",

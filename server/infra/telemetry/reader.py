@@ -180,24 +180,24 @@ async def render_prometheus_exposition(redis: Redis | RedisCluster) -> str:
         lines.append("")
 
     # ── Gauges (UpDownCounter — per-worker aggregation) ──
-    gauge_pids: set = await redis.smembers(KEY_GAUGE_PIDS) or set()
+    worker_ids: set = await redis.smembers(KEY_GAUGE_PIDS) or set()
     # Aggregate across all alive workers
     gauge_agg: dict[str, float] = defaultdict(float)
-    dead_pids: list[str] = []
+    dead_workers: list[str] = []
 
-    for pid in gauge_pids:
-        gk = _gauge_key(pid)
+    for wid in worker_ids:
+        gk = _gauge_key(wid)
         fields: dict = await redis.hgetall(gk) or {}
         if not fields:
             # Key expired — worker crashed; lazy cleanup
-            dead_pids.append(pid)
+            dead_workers.append(wid)
             continue
         for field, val in fields.items():
             gauge_agg[field] += float(val)
 
-    # Lazy SREM dead PIDs
-    if dead_pids:
-        await redis.srem(KEY_GAUGE_PIDS, *dead_pids)
+    # Lazy SREM dead workers
+    if dead_workers:
+        await redis.srem(KEY_GAUGE_PIDS, *dead_workers)
 
     # Group by metric name
     gauge_groups: dict[str, list[tuple[dict, float]]] = defaultdict(list)

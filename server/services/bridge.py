@@ -69,11 +69,20 @@ class ConnectionBridge:
         # Background tasks
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._shutting_down = False
+        self._draining = False
 
     async def start(self) -> None:
         """Start the worker heartbeat."""
         self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
         logger.info("Bridge worker {} started", self._worker_id)
+
+    def begin_drain(self) -> None:
+        """Stop accepting new bot connections on this worker."""
+        self._draining = True
+
+    def is_draining(self) -> bool:
+        """Return True when this worker is draining for shutdown."""
+        return self._draining
 
     async def _run_heartbeat(self) -> None:
         """Periodically refresh bot heartbeats and compete for cleanup duty."""
@@ -516,22 +525,27 @@ class ConnectionBridge:
     # ── Graceful shutdown ─────────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
-        """Graceful shutdown: close all connections, clean up Redis."""
+        """Graceful shutdown: stop accepting new bots and release local connections."""
         self._shutting_down = True
+        self._draining = True
         logger.info("Bridge worker {} shutting down...", self._worker_id)
 
-        # Close bot connections and clean Redis
-        for token, ws in list(self._bots.items()):
+        local_items = list(self._bots.items())
+
+        # Close local bot connections so clients can reconnect elsewhere.
+        for token, ws in local_items:
             try:
                 await ws.close(code=Err.WS_SERVER_RESTART.status, reason=Err.WS_SERVER_RESTART.message)
             except Exception:
                 logger.debug("WebSocket close error during shutdown (ignored)")
-            await self._redis.zrem(_BOT_ALIVE_KEY, token)
-            await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
-            await self._cleanup_chat_inboxes(token)
-            await self._redis.delete(f"{_BOT_GEN_PREFIX}{token}")
-        self._bots.clear()
-        self._bot_gens.clear()
+
+        # Reuse unregister_bot() so Redis cleanup remains guarded by WS identity
+        # and generation ownership. A newer worker may already have taken over.
+        for token, ws in local_items:
+            try:
+                await self.unregister_bot(token, ws)
+            except Exception:
+                logger.exception("Shutdown unregister failed (worker={} token={}...)", self._worker_id, token[:10])
 
         # Cancel all polling tasks
         for task in self._poll_tasks.values():
@@ -613,4 +627,3 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
         return None
 
     return None
-

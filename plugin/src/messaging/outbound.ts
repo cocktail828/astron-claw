@@ -22,7 +22,7 @@ export async function sendTextMessage(
   if (!target) throw new Error("Invalid target address");
 
   // Send as JSON-RPC notification with sessionId for routing
-  bridgeClient.send({
+  const ok = bridgeClient.send({
     jsonrpc: "2.0",
     method: "session/update",
     params: {
@@ -33,6 +33,9 @@ export async function sendTextMessage(
       },
     },
   });
+  if (!ok) {
+    throw new Error(`Bridge send failed for session ${target}`);
+  }
 
   recordChannelRuntimeState(account.accountId, { lastOutboundAt: Date.now() });
 }
@@ -81,7 +84,7 @@ export async function sendMediaMessage(
   // Send as JSON-RPC notification with media info.
   // sessionId for routing = target (normalizeTarget extracts sessionId from address).
   // This also matches the S3 storage path prefix — both are the session UUID.
-  bridgeClient.send({
+  const ok = bridgeClient.send({
     jsonrpc: "2.0",
     method: "session/update",
     params: {
@@ -101,6 +104,9 @@ export async function sendMediaMessage(
       },
     },
   });
+  if (!ok) {
+    throw new Error(`Bridge media send failed for session ${target}`);
+  }
 
   recordChannelRuntimeState(account.accountId, { lastOutboundAt: Date.now() });
 }

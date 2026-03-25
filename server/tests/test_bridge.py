@@ -481,3 +481,42 @@ class TestHeartbeat:
         bot_ws.close.assert_awaited_once_with(code=Err.WS_EVICTED.status, reason=Err.WS_EVICTED.message)
         assert "tok-stale" not in bridge._bots
         assert "tok-stale" not in bridge._bot_gens
+
+
+class TestDraining:
+    def test_begin_drain_marks_worker_unavailable(self, bridge):
+        assert bridge.is_draining() is False
+        bridge.begin_drain()
+        assert bridge.is_draining() is True
+
+
+class TestShutdown:
+    async def test_shutdown_uses_unregister_guard_and_skips_new_owner_cleanup(self, bridge, mock_redis, mock_queue):
+        ws = AsyncMock()
+        mock_redis.incr.return_value = 1
+        await bridge.register_bot("tok-1", ws)
+
+        # Another worker already took over with a higher generation.
+        mock_redis.get.return_value = b"2"
+
+        await bridge.shutdown()
+
+        ws.close.assert_awaited_once_with(code=Err.WS_SERVER_RESTART.status, reason=Err.WS_SERVER_RESTART.message)
+        assert bridge.is_draining() is True
+        assert bridge._shutting_down is True
+        mock_redis.zrem.assert_not_awaited()
+        mock_queue.delete_queue.assert_not_awaited()
+
+    async def test_shutdown_cleans_redis_for_current_owner(self, bridge, mock_redis, mock_queue):
+        ws = AsyncMock()
+        mock_redis.incr.return_value = 3
+        await bridge.register_bot("tok-1", ws)
+
+        # This worker still owns the latest generation.
+        mock_redis.get.return_value = b"3"
+
+        await bridge.shutdown()
+
+        ws.close.assert_awaited_once_with(code=Err.WS_SERVER_RESTART.status, reason=Err.WS_SERVER_RESTART.message)
+        mock_redis.zrem.assert_awaited_with("bridge:bot_alive", "tok-1")
+        mock_queue.delete_queue.assert_awaited_with("bridge:bot_inbox:tok-1")
