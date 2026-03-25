@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { SILENT_REPLY_TOKEN, isSilentReplyText, loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
 
-import { PLUGIN_ID } from "../constants.js";
+import {
+  BOT_RPC_ERRORS,
+  PLUGIN_ID,
+} from "../constants.js";
 import { getRuntime, logger, activeSessionCtx, activeDispatches, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
 import { inferMediaType } from "../bridge/media.js";
 import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
@@ -375,7 +378,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
   // Use per-request context key to prevent concurrent dispatches from overwriting
   // each other's session context. The requestId suffix ensures uniqueness.
   const ctxKey = `${sessionKey}:${requestId ?? randomUUID()}`;
-  activeSessionCtx.set(ctxKey, { bridgeClient, sessionId });
+  activeSessionCtx.set(ctxKey, { bridgeClient, sessionId, requestId });
   const abortController = new AbortController();
   activeDispatches.set(sessionId, abortController);
   try {
@@ -457,7 +460,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         jsonrpc: "2.0",
         id: requestId,
         sessionId,
-        error: { code: -32000, message: "Dispatch not available" },
+        error: BOT_RPC_ERRORS.DISPATCH_FAILED,
       }, "dispatch_not_available");
     }
   } catch (err) {
@@ -479,7 +482,7 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         jsonrpc: "2.0",
         id: requestId,
         sessionId,
-        error: { code: -32000, message: String(err) },
+        error: { ...BOT_RPC_ERRORS.DISPATCH_FAILED, message: String(err) },
       }, "dispatch_error");
     }
   } finally {

@@ -39,6 +39,7 @@ export type ChannelRuntimeState = {
 export type SessionContext = {
   bridgeClient: BridgeClient;
   sessionId: string;
+  requestId?: string | number | null;
 };
 
 export type ValidationResult = {

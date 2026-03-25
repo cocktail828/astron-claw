@@ -1,4 +1,5 @@
 import { activeSessionCtx, pendingToolCtx, toolCtxKey, logger } from "./runtime.js";
+import { BOT_RPC_ERRORS } from "./constants.js";
 import type { SessionContext } from "./types.js";
 
 function sendSessionUpdate(sessionCtx: SessionContext, payload: any, description: string): void {
@@ -6,6 +7,16 @@ function sendSessionUpdate(sessionCtx: SessionContext, payload: any, description
   if (!ok) {
     logger.warn(`[bridge] send dropped (${description}) session=${sessionCtx.sessionId}`);
   }
+}
+
+function findSessionContext(sessionKey?: string): { sessionCtx?: SessionContext; resolvedCtxKey?: string } {
+  if (!sessionKey) return {};
+  for (const [k, v] of activeSessionCtx) {
+    if (k === sessionKey || k.startsWith(sessionKey + ":")) {
+      return { sessionCtx: v, resolvedCtxKey: k };
+    }
+  }
+  return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -20,15 +31,7 @@ export function registerToolHooks(api: any): void {
     // Look up session context — ctx.sessionKey from SDK may be the raw route key,
     // but activeSessionCtx now uses per-request keys (sessionKey:requestId).
     // Search for any entry whose key starts with ctx.sessionKey.
-    let sessionCtx: SessionContext | undefined;
-    let resolvedCtxKey: string = ctx.sessionKey;
-    for (const [k, v] of activeSessionCtx) {
-      if (k === ctx.sessionKey || k.startsWith(ctx.sessionKey + ":")) {
-        sessionCtx = v;
-        resolvedCtxKey = k;
-        break;
-      }
-    }
+    const { sessionCtx, resolvedCtxKey = ctx.sessionKey } = findSessionContext(ctx.sessionKey);
     if (!sessionCtx) return;
     // Stash for after_tool_call which lacks ctx.sessionKey (SDK bug).
     // Key now includes sessionKey to prevent cross-session collisions.
@@ -67,13 +70,10 @@ export function registerToolHooks(api: any): void {
     let pendingKey: string | undefined;
 
     // Try activeSessionCtx first (prefix match on ctx.sessionKey)
-    for (const [k, v] of activeSessionCtx) {
-      if (k === ctx.sessionKey || k.startsWith(ctx.sessionKey + ":")) {
-        sessionCtx = v;
-        // Construct the matching pendingToolCtx key for cleanup
-        pendingKey = toolCtxKey(k, event.toolName, event.params);
-        break;
-      }
+    const activeMatch = findSessionContext(ctx.sessionKey);
+    if (activeMatch.sessionCtx && activeMatch.resolvedCtxKey) {
+      sessionCtx = activeMatch.sessionCtx;
+      pendingKey = toolCtxKey(activeMatch.resolvedCtxKey, event.toolName, event.params);
     }
 
     // Fallback: search pendingToolCtx for a key that matches toolName+params suffix.
@@ -109,6 +109,21 @@ export function registerToolHooks(api: any): void {
         },
       },
     }, "tool_result");
+  });
+
+  api.on("agent_end", (event: any, ctx: any) => {
+    if (event?.success !== false || event?.error !== "aborted") return;
+
+    const { sessionCtx } = findSessionContext(ctx?.sessionKey);
+    if (!sessionCtx) return;
+
+    const payload = {
+      jsonrpc: "2.0",
+      id: sessionCtx.requestId,
+      sessionId: sessionCtx.sessionId,
+      error: BOT_RPC_ERRORS.AGENT_ABORTED_TIMEOUT,
+    };
+    sendSessionUpdate(sessionCtx, payload, "agent_end_abort");
   });
 
   // === DIAG: listen to ALL SDK events for full trace ===
