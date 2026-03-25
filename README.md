@@ -142,6 +142,7 @@ docker run -d --name astron-claw-backend -p 8765:8765 \
 | `MYSQL_PASSWORD` | MySQL 密码 | — |
 | `MYSQL_DATABASE` | 数据库名 | `astron_claw` |
 | `REDIS_ADDRS` | Redis 节点地址（逗号分隔，多地址自动启用集群模式） | `127.0.0.1:6379` |
+| `REDIS_CLUSTER` | 是否强制使用 Redis Cluster 客户端（单 seed 节点接入集群时设为 `true`） | `false` |
 | `REDIS_PASSWORD` | Redis 密码 | — |
 | `REDIS_DB` | Redis DB 编号（集群模式忽略） | `0` |
 | `SERVER_HOST` | 监听地址 | `0.0.0.0` |

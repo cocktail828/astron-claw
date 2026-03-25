@@ -10,7 +10,7 @@ func TestLoad_Defaults(t *testing.T) {
 	// Clear env to test defaults
 	envKeys := []string{
 		"MYSQL_HOST", "MYSQL_PORT", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE",
-		"REDIS_ADDRS", "REDIS_PASSWORD", "REDIS_DB",
+		"REDIS_ADDRS", "REDIS_PASSWORD", "REDIS_DB", "REDIS_CLUSTER",
 		"SERVER_HOST", "SERVER_PORT", "SERVER_LOG_LEVEL",
 		"QUEUE_TYPE", "QUEUE_MAX_STREAM_LEN",
 		"OSS_TYPE", "OSS_ENDPOINT", "OSS_PUBLIC_ENDPOINT", "OSS_ACCESS_KEY", "OSS_SECRET_KEY", "OSS_BUCKET",
@@ -76,6 +76,7 @@ func TestLoad_EnvOverrides(t *testing.T) {
 		os.Unsetenv("MYSQL_HOST")
 		os.Unsetenv("MYSQL_PORT")
 		os.Unsetenv("REDIS_ADDRS")
+		os.Unsetenv("REDIS_CLUSTER")
 		os.Unsetenv("SERVER_PORT")
 		os.Unsetenv("CORS_ORIGINS")
 	}()
@@ -99,6 +100,24 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if len(cfg.CORS.Origins) != 2 || cfg.CORS.Origins[0] != "http://a.com" || cfg.CORS.Origins[1] != "http://b.com" {
 		t.Errorf("CORS.Origins = %v, want [http://a.com http://b.com]", cfg.CORS.Origins)
+	}
+}
+
+func TestLoad_RedisClusterFlagForSingleSeed(t *testing.T) {
+	os.Setenv("REDIS_ADDRS", "26.24.1.159:6379")
+	os.Setenv("REDIS_CLUSTER", "true")
+	defer func() {
+		os.Unsetenv("REDIS_ADDRS")
+		os.Unsetenv("REDIS_CLUSTER")
+	}()
+
+	cfg := Load()
+
+	if len(cfg.Redis.Addrs) != 1 || cfg.Redis.Addrs[0] != "26.24.1.159:6379" {
+		t.Fatalf("Redis.Addrs = %v, want [26.24.1.159:6379]", cfg.Redis.Addrs)
+	}
+	if !cfg.Redis.IsCluster() {
+		t.Fatal("Redis should be cluster mode when REDIS_CLUSTER=true even with a single seed node")
 	}
 }
 

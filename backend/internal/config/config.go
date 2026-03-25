@@ -56,12 +56,14 @@ func (c MysqlConfig) DSNWithoutDB() string {
 type RedisConfig struct {
 	Password string
 	DB       int
-	Addrs    []string // Node addresses (comma-separated via REDIS_ADDRS); >1 means cluster mode
+	Addrs    []string
+	Cluster  bool
 }
 
-// IsCluster returns true when multiple Redis addresses are configured.
+// IsCluster returns true when Redis Cluster mode is explicitly enabled or
+// when multiple seed addresses are configured.
 func (c RedisConfig) IsCluster() bool {
-	return len(c.Addrs) > 1
+	return c.Cluster || len(c.Addrs) > 1
 }
 
 type DBPoolConfig struct {
@@ -152,6 +154,7 @@ func Load() *AppConfig {
 			Password: getEnv("REDIS_PASSWORD", ""),
 			DB:       getEnvInt("REDIS_DB", 0),
 			Addrs:    splitCSV(getEnv("REDIS_ADDRS", "127.0.0.1:6379")),
+			Cluster:  getEnvBool("REDIS_CLUSTER", false),
 		},
 		Server: ServerConfig{
 			Host:           getEnv("SERVER_HOST", "0.0.0.0"),
