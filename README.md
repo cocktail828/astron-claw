@@ -13,7 +13,7 @@ Bot 通过 WebSocket 出站连接，Chat 通过 HTTP SSE 接入，服务器按 T
 ```
 Chat Client ──HTTP SSE──▶ ┌─────────────────────┐ ◀──WebSocket── Bot Plugin (OpenClaw)
            /bridge/chat   │                     │  /bridge/bot
-                          │   Bridge  Server    │
+                          │   Go Backend        │
                           │    Gin  + Redis     │
                           │                     │
                           │  Token Pairing      │
@@ -92,7 +92,7 @@ make preview
 
 ### 4. 安装 Bot 插件
 
-在 Admin 面板创建 Token 后，在 Bot 所在机器一行安装：
+在 Go backend 已经部署并可访问后，在 Admin 面板创建 Token，然后在 Bot 所在机器一行安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/main/install.sh | bash -s -- \
@@ -123,7 +123,7 @@ docker build -f backend/Dockerfile -t astron-claw-backend .
 docker run -d --name astron-claw-backend -p 8765:8765 \
   -e MYSQL_HOST=<mysql-ip> \
   -e MYSQL_PASSWORD=<password> \
-  -e REDIS_HOST=<redis-ip> \
+  -e REDIS_ADDRS=<redis-ip>:6379 \
   astron-claw-backend
 ```
 

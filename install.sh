@@ -3,8 +3,8 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # astron-claw installer
-# Installs the astron-claw OpenClaw channel plugin and optionally the Python
-# bridge server.
+# Installs the astron-claw OpenClaw channel plugin.
+# The bridge backend is now deployed separately via the Go backend in backend/.
 # Supports both local (plugin/ directory present) and remote (GitHub Release
 # download) modes, so it works equally well from a git clone or via:
 #
@@ -29,8 +29,6 @@ BOT_TOKEN=""
 SERVER_URL="ws://localhost:8765/bridge/bot"
 ACCOUNT_NAME="AstronClaw"
 VERSION="latest"
-WITH_SERVER="0"
-SERVER_DIR="${SERVER_DIR:-$HOME/.openclaw/astron-claw-server}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,9 +48,6 @@ Options:
                             (default: ~/.openclaw/extensions/astron-claw)
   --version <tag>           Release version to download (default: latest)
                             Only used in remote mode (no local plugin/ dir)
-  --with-server             Also install the bridge server component
-  --server-dir <path>       Server install directory
-                            (default: ~/.openclaw/astron-claw-server)
   -h, --help                Show this help message
 USAGE
 }
@@ -115,13 +110,14 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --with-server)
-      WITH_SERVER="1"
-      shift
+      log_error "--with-server has been removed"
+      log_error "Deploy the Go backend separately (see README.md or docker-compose.yml)."
+      exit 1
       ;;
     --server-dir)
-      need_next_arg "$1" "$#"
-      SERVER_DIR="$2"
-      shift 2
+      log_error "--server-dir has been removed"
+      log_error "Deploy the Go backend separately (see README.md or docker-compose.yml)."
+      exit 1
       ;;
     -h|--help)
       usage
@@ -150,14 +146,6 @@ fi
 require_cmd "$OPENCLAW_BIN" "Install OpenClaw CLI then retry: https://docs.openclaw.dev"
 require_cmd node "Install Node.js then retry: https://nodejs.org"
 
-if [ "$WITH_SERVER" = "1" ]; then
-  require_cmd python3 "Install Python 3 then retry: https://python.org"
-  if ! command -v pip3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
-    log_error "pip not found. Install pip then retry."
-    exit 1
-  fi
-fi
-
 log "prerequisites check passed"
 
 # ---------------------------------------------------------------------------
@@ -166,10 +154,8 @@ log "prerequisites check passed"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
 PLUGIN_SRC="$SCRIPT_DIR/plugin"
 TMP_DIR=""
-USE_LOCAL="0"
 
 if [ -d "$PLUGIN_SRC" ] && [ -f "$PLUGIN_SRC/package.json" ]; then
-  USE_LOCAL="1"
   log "detected local plugin directory: $PLUGIN_SRC"
 else
   log "no local plugin/ directory found, will download from GitHub Release"
@@ -299,56 +285,6 @@ cd /
 ROLLBACK_NEEDED="0"
 
 # ---------------------------------------------------------------------------
-# Install server component (if requested)
-# ---------------------------------------------------------------------------
-if [ "$WITH_SERVER" = "1" ]; then
-  log "installing bridge server to $SERVER_DIR"
-
-  # Determine server source directory
-  SERVER_SRC="$SCRIPT_DIR/server"
-  FRONTEND_SRC="$SCRIPT_DIR/frontend"
-
-  if [ "$USE_LOCAL" != "1" ]; then
-    # In remote mode, check if tarball included server files
-    SERVER_SRC="$TMP_DIR/server"
-    FRONTEND_SRC="$TMP_DIR/frontend"
-  fi
-
-  if [ ! -d "$SERVER_SRC" ] || [ ! -f "$SERVER_SRC/requirements.txt" ]; then
-    log_error "server/ directory not found"
-    log_error "server installation requires running from a git clone or a full release tarball"
-    exit 1
-  fi
-
-  mkdir -p "$SERVER_DIR"
-
-  log "copying server files"
-  cp -r "$SERVER_SRC/"* "$SERVER_DIR/"
-
-  if [ -d "$FRONTEND_SRC" ]; then
-    log "copying frontend files"
-    mkdir -p "$SERVER_DIR/frontend"
-    cp -r "$FRONTEND_SRC/"* "$SERVER_DIR/frontend/"
-  fi
-
-  # Create media directory
-  mkdir -p "$SERVER_DIR/media"
-
-  log "installing Python dependencies"
-  if command -v pip3 >/dev/null 2>&1; then
-    pip3 install -r "$SERVER_DIR/requirements.txt" --quiet </dev/null
-  else
-    python3 -m pip install -r "$SERVER_DIR/requirements.txt" --quiet </dev/null
-  fi
-
-  log "server installed to $SERVER_DIR"
-  log ""
-  log "To start the bridge server:"
-  log "  cd $SERVER_DIR && python3 run.py"
-  log ""
-fi
-
-# ---------------------------------------------------------------------------
 # Restart gateway to load and register the channel plugin
 # ---------------------------------------------------------------------------
 log "restarting OpenClaw gateway to register channel"
@@ -432,9 +368,6 @@ log "done! astron-claw channel plugin installed successfully"
 log "channel name: $ACCOUNT_NAME"
 log "bridge server: $SERVER_URL"
 log "plugin directory: $TARGET_DIR"
-if [ "$WITH_SERVER" = "1" ]; then
-  log "server directory: $SERVER_DIR"
-fi
 
 }
 

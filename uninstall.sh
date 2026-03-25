@@ -4,7 +4,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # astron-claw uninstaller
 # Removes the astron-claw OpenClaw channel plugin, its configuration,
-# and optionally the bridge server installation.
+# and optionally a legacy bridge server installation from older releases.
 #
 # Wrapped in main() so `curl ... | bash` reads the entire script before
 # executing — prevents sub-commands from consuming stdin.
@@ -29,8 +29,8 @@ Options:
   --target-dir <path>       Plugin install directory
                             (default: ~/.openclaw/extensions/astron-claw)
   --keep-config             Do not remove channel config from openclaw.json
-  --with-server             Also remove the bridge server installation
-  --server-dir <path>       Server install directory
+  --with-server             Also remove a legacy local bridge server directory
+  --server-dir <path>       Legacy server install directory
                             (default: ~/.openclaw/astron-claw-server)
   -y, --yes                 Skip confirmation prompt
   -h, --help                Show this help message
@@ -101,7 +101,7 @@ if [ "$SKIP_CONFIRM" != "1" ]; then
   printf "[astron-uninstall] This will remove the astron-claw channel plugin.\n"
   printf "[astron-uninstall]   Plugin directory: %s\n" "$TARGET_DIR"
   if [ "$WITH_SERVER" = "1" ]; then
-    printf "[astron-uninstall]   Server directory: %s\n" "$SERVER_DIR"
+    printf "[astron-uninstall]   Legacy server directory: %s\n" "$SERVER_DIR"
   fi
   printf "[astron-uninstall] Continue? [y/N] "
   read -r answer </dev/tty || { log_error "cannot read from terminal (use -y for non-interactive mode)"; exit 1; }
@@ -194,12 +194,12 @@ if [ "$WITH_SERVER" = "1" ]; then
   if [ -d "$SERVER_DIR" ]; then
     # Remove media directory first (log explicitly as it may contain user data)
     if [ -d "$SERVER_DIR/media" ]; then
-      log "removing media directory: $SERVER_DIR/media"
+      log "removing legacy media directory: $SERVER_DIR/media"
     fi
-    log "removing server directory: $SERVER_DIR"
+    log "removing legacy server directory: $SERVER_DIR"
     rm -rf "$SERVER_DIR"
   else
-    log "server directory not found: $SERVER_DIR (already removed?)"
+    log "legacy server directory not found: $SERVER_DIR (already removed?)"
   fi
 fi
 
@@ -213,7 +213,7 @@ fi
 
 log "done! astron-claw channel plugin has been removed"
 if [ "$WITH_SERVER" = "1" ]; then
-  log "bridge server has also been removed"
+  log "legacy bridge server directory has also been removed"
 fi
 
 }
