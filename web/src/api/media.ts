@@ -12,5 +12,10 @@ export async function uploadFile(
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000,
   })
-  return data
+
+  return {
+    url: data.downloadUrl ?? data.url,
+    mimeType: data.mimeType,
+    key: data.key,
+  }
 }

@@ -80,8 +80,12 @@ func (m *MediaManager) Store(body io.Reader, fileName string, fileSize int64, mi
 		return nil, ErrMIMERejected
 	}
 
-	// Re-assemble reader: prepend the buffered bytes
-	combinedBody := io.MultiReader(bytes.NewReader(buf[:n]), body)
+	// Preserve seekability for multipart uploads so S3-compatible SDKs can
+	// compute checksums on plain HTTP endpoints such as local MinIO.
+	storageBody, err := rewindForStorage(body, buf[:n])
+	if err != nil {
+		return nil, err
+	}
 
 	// Sanitize filename
 	safeName := filepath.Base(fileName)
@@ -97,7 +101,7 @@ func (m *MediaManager) Store(body io.Reader, fileName string, fileSize int64, mi
 
 	key := sid + "/" + safeName
 
-	downloadURL, err := m.storage.PutObject(key, combinedBody, mimeType, fileSize)
+	downloadURL, err := m.storage.PutObject(key, storageBody, mimeType, fileSize)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +120,22 @@ func (m *MediaManager) Store(body io.Reader, fileName string, fileSize int64, mi
 		SessionID:   sid,
 		DownloadURL: downloadURL,
 	}, nil
+}
+
+func rewindForStorage(body io.Reader, sniffed []byte) (io.Reader, error) {
+	if rs, ok := body.(io.ReadSeeker); ok {
+		if _, err := rs.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("rewind seekable body: %w", err)
+		}
+		return rs, nil
+	}
+
+	payload, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("buffer non-seekable body: %w", err)
+	}
+	combined := append(append([]byte{}, sniffed...), payload...)
+	return bytes.NewReader(combined), nil
 }
 
 func isMIMEAllowed(mimeType string) bool {
